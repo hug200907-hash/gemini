@@ -1,60 +1,62 @@
 import streamlit as st
 from google import genai
 
-st.set_page_config(page_title="Gemini Model Checker", page_icon="⚡")
-st.title("⚡ Kiểm tra Key & Danh sách Model Gemini")
+st.set_page_config(page_title="Tra cứu Gemini AI", page_icon="🤖")
+st.title("🤖 Tra cứu thông tin với Gemini AI")
 
-api_key = st.sidebar.text_input("Nhập Gemini API Key (AQ...):", type="password")
+# Nhập Key ở thanh bên (Hỗ trợ cả Key mới dạng AQ...)
+api_key = st.sidebar.text_input("Nhập Gemini API Key:", type="password")
 
 if not api_key:
-    st.info("💡 Nhập API Key ở thanh bên để quét danh sách mô hình thực tế.", icon="ℹ️")
+    st.info("💡 Vui lòng nhập Gemini API Key ở thanh bên để bắt đầu.", icon="ℹ️")
 else:
     try:
+        # Khởi tạo Client
         client = genai.Client(api_key=api_key.strip())
         
-        # Hàm lấy toàn bộ model khả dụng từ API
+        # Tự động lấy danh sách Model thực tế từ API của bạn
         @st.cache_data(show_spinner=False)
-        def get_all_supported_models(_key_str):
-            c = genai.Client(api_key=_key_str)
-            model_list = []
-            
-            # Lấy tất cả model từ API
+        def get_model_options(_key):
+            c = genai.Client(api_key=_key)
+            model_names = []
             for m in c.models.list():
-                # Lấy tên rút gọn (bỏ tiền tố 'models/' nếu có)
-                name = m.name.replace("models/", "") if hasattr(m, "name") else str(m)
+                # Lấy thuộc tính name hoặc display_name
+                name = getattr(m, 'name', '') or str(m)
+                name = name.replace("models/", "")
+                if "gemini" in name:
+                    model_names.append(name)
+            return model_names
+
+        with st.spinner("Đang xác thực API Key..."):
+            available_models = get_model_options(api_key.strip())
+
+        # Chọn mô hình mặc định: ưu tiên gemini-3.6-flash, nếu không có thì lấy mô hình đầu tiên trong danh sách
+        default_index = 0
+        if "gemini-3.6-flash" in available_models:
+            default_index = available_models.index("gemini-3.6-flash")
+            
+        selected_model = st.sidebar.selectbox(
+            "Chọn mô hình Gemini:",
+            options=available_models if available_models else ["gemini-3.6-flash"],
+            index=default_index
+        )
+        
+        st.write(f"Đang sử dụng mô hình: **`{selected_model}`**")
+        
+        # Giao diện tra cứu
+        user_prompt = st.text_area("Nhập nội dung cần tra cứu:", height=120)
+        
+        if st.button("Gửi câu hỏi", type="primary"):
+            if user_prompt.strip():
+                with st.spinner(f"Đang xử lý với {selected_model}..."):
+                    response = client.models.generate_content(
+                        model=selected_model,
+                        contents=user_prompt,
+                    )
+                    st.subheader("Kết quả:")
+                    st.markdown(response.text)
+            else:
+                st.warning("Vui lòng nhập nội dung câu hỏi!")
                 
-                # Ưu tiên lấy các dòng mô hình text/flash/pro/chat
-                if any(k in name for k in ["gemini", "flash", "pro"]):
-                    model_list.append(name)
-                    
-            return model_list
-
-        with st.spinner("Đang truy vấn Google API để lấy danh sách Model..."):
-            models = get_all_supported_models(api_key.strip())
-
-        if not models:
-            st.warning("⚠️ API trả về danh sách rỗng. Vui lòng kiểm tra lại dự án trên Google AI Studio đã bật Gemini API chưa.")
-        else:
-            st.sidebar.success(f"Đã tìm thấy {len(models)} mô hình!")
-            
-            # Dropdown chọn model
-            selected_model = st.sidebar.selectbox("Mô hình khả dụng với Key của bạn:", options=models)
-            
-            st.write(f"👉 Đang kết nối tới: **`{selected_model}`**")
-            
-            user_prompt = st.text_area("Nhập nội dung cần tra cứu:", height=120)
-            
-            if st.button("Bắt đầu Tra cứu", type="primary"):
-                if user_prompt.strip():
-                    with st.spinner("Đang phản hồi..."):
-                        response = client.models.generate_content(
-                            model=selected_model,
-                            contents=user_prompt,
-                        )
-                        st.subheader("Kết quả:")
-                        st.markdown(response.text)
-                else:
-                    st.warning("Vui lòng nhập nội dung câu hỏi.")
-                    
     except Exception as e:
-        st.error(f"❌ Lỗi xác thực Key hoặc kết nối API: {e}")
+        st.error(f"❌ Đã xảy ra lỗi: {e}")
