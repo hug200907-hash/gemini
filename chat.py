@@ -1,19 +1,21 @@
 import streamlit as st
 from google import genai
+import concurrent.futures
 
-st.set_page_config(page_title="Gemini Auto-Tester & Chat", page_icon="⚡")
-st.title("⚡ Tra cứu Gemini AI (Đã tự động lọc Model chuẩn)")
+st.set_page_config(page_title="Multi-Model Gemini Test", page_icon="🧪", layout="wide")
+st.title("🧪 Auto-Test & So sánh phản hồi toàn bộ Model Gemini không lỗi")
 
-# Nhập Key ở thanh bên
-api_key = st.sidebar.text_input("Nhập Gemini API Key:", type="password")
+api_key = st.sidebar.text_input("Nhập Gemini API Key (AQ...):", type="password")
 
 if not api_key:
-    st.info("💡 Vui lòng nhập API Key để ứng dụng bắt đầu Auto Test các mô hình.", icon="ℹ️")
+    st.info("💡 Nhập API Key ở thanh bên để khởi động hệ thống Auto-Test.", icon="ℹ️")
 else:
     try:
         client = genai.Client(api_key=api_key.strip())
         
-        # Hàm Auto-Test toàn bộ danh sách Model
+        # ---------------------------------------------------------
+        # BƯỚC 1: LỌC MODEL KHÔNG LỖI (PING TEST)
+        # ---------------------------------------------------------
         @st.cache_data(show_spinner=False)
         def get_working_models(_key_str):
             c = genai.Client(api_key=_key_str)
@@ -24,11 +26,9 @@ else:
             total = len(all_raw)
             
             for idx, m in enumerate(all_raw):
-                # Lấy tên mô hình
                 m_name = getattr(m, 'name', str(m))
-                
-                # Tiến hành test trực tiếp bằng một câu lệnh siêu ngắn
                 try:
+                    # Gửi tin nhắn test siêu ngắn để lọc lỗi (404, 403,...)
                     res = c.models.generate_content(
                         model=m_name,
                         contents="Hi",
@@ -36,46 +36,64 @@ else:
                     if res and res.text:
                         working_list.append(m_name)
                 except Exception:
-                    # Nếu gặp bất kỳ lỗi nào (404, 403, 400...), tự động bỏ qua model này
+                    # Tự động bỏ qua các mô hình bị lỗi
                     pass
                 
-                # Cập nhật thanh tiến trình
                 if total > 0:
                     progress_bar.progress((idx + 1) / total, text=f"Đang kiểm tra: {m_name}")
             
             progress_bar.empty()
             return working_list
 
-        with st.spinner("🔍 Đang tiến hành Auto Test để lọc các model hoạt động..."):
+        with st.spinner("🔍 Đang chạy Auto-Test để lọc các Model hoạt động..."):
             valid_models = get_working_models(api_key.strip())
 
         if not valid_models:
             st.error("❌ Không tìm thấy mô hình nào hoạt động thành công với API Key này.")
         else:
-            st.sidebar.success(f"✅ Auto Test xong! Tìm thấy {len(valid_models)} model hoạt động hoàn hảo.")
+            st.sidebar.success(f"✅ Đã lọc xong! Có {len(valid_models)} mô hình KHÔNG LỖI.")
+            st.sidebar.write("**Danh sách sẵn sàng:**")
+            for m in valid_models:
+                st.sidebar.code(m, language="text")
+
+            # ---------------------------------------------------------
+            # BƯỚC 2: CHẠY CÂU HỎI TRÊN TOÀN BỘ MODEL KHÔNG LỖI
+            # ---------------------------------------------------------
+            st.subheader("📌 Gửi câu hỏi đồng loạt tới toàn bộ Model")
             
-            # Cho chọn các model đã qua kiểm duyệt
-            selected_model = st.sidebar.selectbox(
-                "Mô hình khả dụng (Không lỗi):",
-                options=valid_models
-            )
+            # Ô nhập câu hỏi (Mặc định là câu hỏi thời gian)
+            user_prompt = st.text_input("Câu hỏi cần kiểm tra:", value="Hôm nay là ngày mấy?")
             
-            st.write(f"👉 Mô hình đang dùng: **`{selected_model}`**")
-            
-            # Giao diện tra cứu
-            user_prompt = st.text_area("Nhập câu hỏi / nội dung tra cứu:", height=120)
-            
-            if st.button("Gửi câu hỏi", type="primary"):
-                if user_prompt.strip():
-                    with st.spinner("Đang xử lý..."):
-                        response = client.models.generate_content(
-                            model=selected_model,
+            if st.button("🚀 Chạy trên TOÀN BỘ Model không lỗi", type="primary"):
+                st.divider()
+                st.write(f"Đang gửi câu hỏi **'{user_prompt}'** tới {len(valid_models)} mô hình cùng lúc...")
+                
+                # Hàm trợ giúp gọi API cho từng model
+                def query_model(model_name):
+                    try:
+                        res = client.models.generate_content(
+                            model=model_name,
                             contents=user_prompt,
                         )
-                        st.subheader("Kết quả:")
-                        st.markdown(response.text)
-                else:
-                    st.warning("Vui lòng nhập nội dung câu hỏi!")
+                        return model_name, res.text, None
+                    except Exception as e:
+                        return model_name, None, str(e)
+
+                # Chạy song song (Multithreading) để lấy kết quả nhanh nhất
+                results = []
+                with st.spinner("Đang chờ phản hồi từ tất cả các mô hình..."):
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        futures = [executor.submit(query_model, m) for m in valid_models]
+                        for future in concurrent.futures.as_completed(futures):
+                            results.append(future.result())
+
+                # IN KẾT QUẢ CỦA TOÀN BỘ MODEL
+                for m_name, text_res, err in results:
+                    with st.expander(f"🤖 Model: **{m_name}**", expanded=True):
+                        if text_res:
+                            st.markdown(text_res)
+                        else:
+                            st.error(f"Lỗi phát sinh: {err}")
 
     except Exception as e:
-        st.error(f"❌ Khởi tạo thất bại: {e}")
+        st.error(f"❌ Lỗi khởi tạo hệ thống: {e}")
