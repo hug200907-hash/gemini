@@ -4,14 +4,14 @@ from google import genai
 st.set_page_config(page_title="Hỏi đáp Gemini", page_icon="🤖")
 st.title("🤖 Tra cứu thông tin với Gemini AI")
 
-# Nhập Key dạng AQ.A...
+# Nhập Key dạng AQ...
 api_key = st.sidebar.text_input("Nhập Gemini API Key (AQ...):", type="password")
 
 if not api_key:
-    st.info("💡 Vui lòng nhập Gemini API Key (dạng AQ...) ở thanh bên để bắt đầu.", icon="ℹ️")
+    st.info("💡 Vui lòng nhập Gemini API Key ở thanh bên để bắt đầu.", icon="ℹ️")
 else:
     try:
-        # SDK chính thức google-genai sẽ tự động xử lý tiền tố AQ.
+        # Khởi tạo client kết nối Gemini API
         client = genai.Client(api_key=api_key.strip())
         
         user_prompt = st.text_area("Nhập nội dung cần tra cứu:", height=120)
@@ -19,9 +19,9 @@ else:
         if st.button("Tra cứu", type="primary"):
             if user_prompt.strip():
                 with st.spinner("Gemini đang xử lý..."):
-                    # Gọi mô hình gemini-2.5-flash
+                    # Cập nhật tên mô hình khả dụng (gemini-1.5-flash)
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-1.5-flash",
                         contents=user_prompt,
                     )
                     st.subheader("Kết quả:")
@@ -29,4 +29,4 @@ else:
             else:
                 st.warning("Vui lòng nhập câu hỏi!")
     except Exception as e:
-        st.error(f"Lỗi xác thực hoặc kết nối: {e}")
+        st.error(f"Đã xảy ra lỗi: {e}")
