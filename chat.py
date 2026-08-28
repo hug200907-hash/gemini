@@ -18,7 +18,7 @@ st.set_page_config(
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 torch.set_default_device("cpu")
 
-DEFAULT_MODEL_PATH = "./DeepSeek-V3"
+DEFAULT_MODEL_PATH = "https://github.com/deepseek-ai/deepseek-v3"
 
 # ==========================================
 # SYSTEM INFORMATION FUNCTIONS
