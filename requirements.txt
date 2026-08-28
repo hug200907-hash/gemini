@@ -1,4 +1,3 @@
 streamlit>=1.30.0
-torch>=2.0.0
+requests>=2.31.0
 psutil>=5.9.0
-llama-cpp-python>=0.2.20
