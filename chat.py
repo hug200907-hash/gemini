@@ -493,7 +493,6 @@ def render_review_tab():
             cols = st.columns(4)
             for i, opt in enumerate(q['options']):
                 with cols[i]:
-                    st.write(f"Option {i+1}: {opt}")
                     # --- BẮT ĐẦU PHẦN SỬA ---
                     fp = io.BytesIO()
                     gTTS(text=opt, lang='en').write_to_fp(fp)
