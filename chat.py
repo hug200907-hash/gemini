@@ -469,6 +469,7 @@ def render_review_tab():
         with st.spinner("Preparing question..."):
             session['current_q'] = generate_question(word)
             session['answered'] = False
+            session['start_time'] = time.time()  # Bắt đầu tính giờ
             
     q = session['current_q']
     
@@ -478,6 +479,27 @@ def render_review_tab():
     
     # HIỂN THỊ CÂU HỎI
     st.subheader(f"Type: {q['type'].replace('_', ' ').title()}")
+    
+    # HỆ THỐNG ĐẾM NGƯỢC (JS Timer cho UI)
+    time_limit = 20
+    if not session['answered']:
+        st.markdown(f"""
+            <div style="font-size: 18px; font-weight: bold; color: #ff4b4b; margin-bottom: 15px;">
+                ⏳ Thời gian còn lại: <span id="timer_{idx}">{time_limit}</span>s
+            </div>
+            <script>
+                var timeLeft = {time_limit};
+                var timerId = setInterval(function() {{
+                    if (timeLeft <= 0) {{
+                        clearInterval(timerId);
+                        document.getElementById('timer_{idx}').innerHTML = "Hết giờ!";
+                    }} else {{
+                        document.getElementById('timer_{idx}').innerHTML = timeLeft;
+                        timeLeft -= 1;
+                    }}
+                }}, 1000);
+            </script>
+        """, unsafe_allow_html=True)
     
     user_ans = None
     
@@ -494,11 +516,10 @@ def render_review_tab():
         elif q['type'] == 'listening_mcq':
             st.markdown(f"**Meaning:** {q['meaning_vi']}")
             st.write("Listen to the options:")
-            # Generate mini audios for buttons (Workaround for Streamlit limitations)
             cols = st.columns(4)
             for i, opt in enumerate(q['options']):
                 with cols[i]:
-                    st.write(f"Option {i+1}: {opt}") # Show text too to make it playable/clickable in simple way
+                    st.write(f"Option {i+1}: {opt}")
                     st.audio(io.BytesIO(gTTS(text=opt, lang='en').stream().read()), format="audio/mp3")
             user_ans = st.radio("Select Option:", q['options'], key=f"radio_list_{idx}")
             
@@ -512,49 +533,67 @@ def render_review_tab():
             st.markdown(f"**Meaning:** {word['meaning_vi']}")
             user_ans = st.radio("Choose the correct IPA:", q['options'], key=f"radio_ipa_{idx}")
 
-        submit = st.form_submit_button("Submit Answer", disabled=session['answered'])
+        col1, col2 = st.columns(2)
+        with col1:
+            submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
+        with col2:
+            idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
         
-    # XỬ LÝ SUBMIT
-    if submit and not session['answered']:
+    # XỬ LÝ SUBMIT HOẶC BẤM CHƯA THUỘC
+    if (submit or idk) and not session['answered']:
         session['answered'] = True
+        elapsed_time = time.time() - session['start_time']
         
-        # Normalize for text inputs
-        if q['type'] in ['fill_blank', 'spelling']:
-            is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
+        # Buffer 2 giây cho độ trễ mạng
+        is_timeout = elapsed_time > (time_limit + 2) 
+        
+        if idk:
+            is_correct = False
+            session['fail_reason'] = "Bạn đã chọn chưa thuộc."
+        elif is_timeout:
+            is_correct = False
+            session['fail_reason'] = "Hết thời gian trả lời (20s)!"
         else:
-            is_correct = user_ans == q['correct_answer']
+            session['fail_reason'] = ""
+            # Chấm điểm bình thường
+            if q['type'] in ['fill_blank', 'spelling']:
+                is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
+            else:
+                is_correct = user_ans == q['correct_answer']
             
-        # UI Feedback
+        # Tính XP và Lưu DB
         if is_correct:
-            st.success("🔥 Correct! Nice job.")
             session['correct'] += 1
             st.session_state.session_combo += 1
             xp_gain = 10 + (st.session_state.session_combo * 2)
             award_xp(xp_gain)
             session['session_xp'] += xp_gain
+            session['is_correct'] = True
         else:
-            st.error("Not quite right. Rematch coming soon!")
             st.session_state.session_combo = 0
             award_xp(2)
             session['session_xp'] += 2
+            session['is_correct'] = False
+            
+        process_answer(word, is_correct)
+
+    # SAU KHI TRẢ LỜI -> HIỂN THỊ KẾT QUẢ ĐỨNG YÊN VÀ ĐỢI BẤM NEXT
+    if session['answered']:
+        st.divider()
+        if session.get('is_correct'):
+            st.success("🔥 Correct! Nice job.")
+        else:
+            reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
+            st.error(f"❌ {reason}")
             
         st.info(f"**Correct Answer:** {q['correct_answer']}")
         if q['type'] == 'ipa_mcq':
             st.info(f"**Word:** {word['word']}")
             
-        # PLAY AUDIO NGAY LẬP TỨC CHO TỪ CHÍNH
+        # AUDIO SẼ ĐƯỢC PHÁT VÀ NẰM TRÊN MÀN HÌNH CHỜ BẠN NGHE XONG
         play_audio(word['word'], autoplay=True)
         
-        # Lưu kết quả
-        process_answer(word, is_correct)
-        
-        # Lấy session state lưu tạm để nút Continue xử lý
-        st.session_state.ans_result_shown = True
-        st.rerun()
-
-    # NẾU ĐÃ TRẢ LỜI -> HIỆN NÚT CONTINUE
-    if session['answered']:
-        if st.button("Next Word ➡️"):
+        if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
             session['current_idx'] += 1
             session['current_q'] = None
             session['answered'] = False
