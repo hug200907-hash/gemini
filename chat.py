@@ -488,18 +488,29 @@ def render_review_tab():
             st.markdown(f"**Meaning:** {q['meaning_vi']}")
             user_ans = st.radio("Choose the English word:", q['options'], key=f"radio_{idx}")
         elif q['type'] == 'listening_mcq':
-            st.markdown(f"**Meaning:** {q['meaning_vi']}")
-            st.write("Listen to the options:")
+            st.markdown(f"**Meaning (Nghĩa):** {q['meaning_vi']}")
+            st.write("🎧 Hãy nghe 4 âm thanh dưới đây (chữ đã được giấu đi):")
+            
             cols = st.columns(4)
+            option_labels = [] # Lưu danh sách "Lựa chọn 1", "Lựa chọn 2",...
+            
             for i, opt in enumerate(q['options']):
+                label = f"Lựa chọn {i+1}"
+                option_labels.append(label)
                 with cols[i]:
-                    # --- BẮT ĐẦU PHẦN SỬA ---
+                    st.write(label)
+                    # Chuyển text thành âm thanh
                     fp = io.BytesIO()
                     gTTS(text=opt, lang='en').write_to_fp(fp)
-                    fp.seek(0) # Đưa con trỏ về đầu luồng dữ liệu
+                    fp.seek(0)
                     st.audio(fp, format="audio/mp3")
-                    # --- KẾT THÚC PHẦN SỬA ---
-            user_ans = st.radio("Select Option:", q['options'], key=f"radio_list_{idx}")
+            
+            # Cho người dùng chọn "Lựa chọn 1, 2, 3, 4"
+            selected_label = st.radio("Chọn âm thanh đúng:", option_labels, key=f"radio_list_{idx}")
+            
+            # Dịch ngược từ "Lựa chọn X" ra lại từ tiếng Anh gốc để hệ thống chấm điểm
+            selected_index = option_labels.index(selected_label)
+            user_ans = q['options'][selected_index]
             
         elif q['type'] == 'spelling':
             st.markdown(f"**Meaning:** {word['meaning_vi']}")
