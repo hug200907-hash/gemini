@@ -487,7 +487,6 @@ def render_review_tab():
         elif q['type'] == 'vi_to_en':
             st.markdown(f"**Meaning:** {q['meaning_vi']}")
             user_ans = st.radio("Choose the English word:", q['options'], key=f"radio_{idx}")
-            
         elif q['type'] == 'listening_mcq':
             st.markdown(f"**Meaning:** {q['meaning_vi']}")
             st.write("Listen to the options:")
@@ -495,7 +494,12 @@ def render_review_tab():
             for i, opt in enumerate(q['options']):
                 with cols[i]:
                     st.write(f"Option {i+1}: {opt}")
-                    st.audio(io.BytesIO(gTTS(text=opt, lang='en').stream().read()), format="audio/mp3")
+                    # --- BẮT ĐẦU PHẦN SỬA ---
+                    fp = io.BytesIO()
+                    gTTS(text=opt, lang='en').write_to_fp(fp)
+                    fp.seek(0) # Đưa con trỏ về đầu luồng dữ liệu
+                    st.audio(fp, format="audio/mp3")
+                    # --- KẾT THÚC PHẦN SỬA ---
             user_ans = st.radio("Select Option:", q['options'], key=f"radio_list_{idx}")
             
         elif q['type'] == 'spelling':
