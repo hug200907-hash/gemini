@@ -1,6 +1,4 @@
-from pathlib import Path
 
-code = r'''
 import re
 import copy
 import uuid
@@ -853,3 +851,38 @@ Save batch
 scan_session_id
    ↓
 Undo
+```
+
+### Điểm quan trọng
+
+**Scan All không có nghĩa là gửi toàn bộ bài vào một request AI.**
+
+Nó có nghĩa là:
+
+```text
+Scan All
+=
+quét toàn bộ nội dung
++
+chia thành nhiều chunk
++
+xử lý từng chunk
++
+gộp kết quả cuối cùng
+```
+
+Còn `Giới hạn 20/50/100...` nên được hiểu là:
+
+```text
+số ứng viên tối đa ở kết quả cuối
+```
+
+chứ không phải số chunk được gửi AI.
+"""
+    )
+
+st.caption(
+    "MochiMochi Scan All Demo • "
+    "Production version nên thay extractor demo bằng AI service "
+    "của app hiện tại."
+)
