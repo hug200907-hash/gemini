@@ -7,15 +7,14 @@ import datetime
 import re
 import io
 import base64
-from gtts import gTTS
 import time
+from gtts import gTTS
 
 # ==========================================
 # 0. CONFIG & CONSTANTS
 # ==========================================
 DB_FILE = "vocab_quest.db"
 DEFAULT_MODEL = "minimax/minimax-m3:free"
-# Tùy chỉnh giới hạn từ mỗi session
 SESSION_LIMIT = 6 
 
 st.set_page_config(page_title="Vocab Quest", page_icon="🧠", layout="centered")
@@ -27,7 +26,7 @@ except KeyError:
     API_KEY = None
 
 # ==========================================
-# 1. DATABASE SETUP (PHASE 1)
+# 1. DATABASE SETUP
 # ==========================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -61,7 +60,7 @@ def init_db():
             status TEXT DEFAULT 'new'
         )
     ''')
-    # Bảng User Stats cho Gamification
+    # Bảng User Stats
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,13 +86,12 @@ def init_db():
         )
     ''')
     
-    # Khởi tạo user mặc định
     c.execute("INSERT OR IGNORE INTO user_stats (username, xp, level) VALUES ('default_user', 0, 1)")
     conn.commit()
     conn.close()
 
 # ==========================================
-# 2. AI WRAPPER (PHASE 2)
+# 2. AI WRAPPER
 # ==========================================
 def call_ai(prompt, system_prompt="You are a helpful AI assistant. Output strictly in JSON format.", retries=2):
     if not API_KEY:
@@ -119,7 +117,6 @@ def call_ai(prompt, system_prompt="You are a helpful AI assistant. Output strict
             resp = requests.post(url, headers=headers, json=payload, timeout=20)
             if resp.status_code == 200:
                 text = resp.json()["choices"][0]["message"]["content"]
-                # Extract JSON using regex if there's markdown
                 match = re.search(r'\[.*\]|\{.*\}', text, re.DOTALL)
                 if match:
                     return json.loads(match.group(0))
@@ -137,6 +134,8 @@ def call_ai(prompt, system_prompt="You are a helpful AI assistant. Output strict
 # 3. HELPER FUNCTIONS
 # ==========================================
 def normalize_word(word):
+    if not word:
+        return ""
     return re.sub(r'[^\w\s]', '', word.strip().lower())
 
 def play_audio(word_text, autoplay=True):
@@ -151,12 +150,11 @@ def play_audio(word_text, autoplay=True):
             st.markdown(md, unsafe_allow_html=True)
         return b64
     except Exception:
-        pass # Graceful fail nếu TTS lỗi
+        pass
     return None
 
 def generate_hint(word, difficulty):
     word = word.strip()
-    # Càng khó càng ít hint (Tối thiểu 1 ký tự, tối đa 80% từ)
     ratio = max(0.2, 1.0 - (difficulty / 100.0) * 0.8)
     num_reveal = max(1, int(len(word) * ratio))
     
@@ -164,12 +162,10 @@ def generate_hint(word, difficulty):
     vowels = set('aeiouyAEIOUY')
     revealed_idx = set()
     
-    # 1. Ưu tiên nguyên âm trước
     for i, c in enumerate(chars):
         if c in vowels and len(revealed_idx) < num_reveal:
             revealed_idx.add(i)
             
-    # 2. Phụ âm ngẫu nhiên nếu còn thiếu (tránh 2 ký tự liên tiếp nếu có thể)
     if len(revealed_idx) < num_reveal:
         unrevealed = [i for i in range(len(chars)) if i not in revealed_idx and chars[i].isalpha()]
         random.seed(word) 
@@ -191,7 +187,7 @@ def generate_hint(word, difficulty):
 def calculate_next_review(word_data, is_correct):
     now = datetime.datetime.now()
     streak = word_data['streak']
-    intervals_mins = [15, 60, 240, 720, 1440, 2880, 4320] # 15m, 1h, 4h, 12h, 1d, 2d, 3d
+    intervals_mins = [15, 60, 240, 720, 1440, 2880, 4320]
     
     if is_correct:
         new_streak = streak + 1
@@ -200,7 +196,7 @@ def calculate_next_review(word_data, is_correct):
         new_diff = max(0, word_data['difficulty'] + random.randint(8, 15))
     else:
         new_streak = 0
-        interval = random.randint(5, 30) # Sai -> review trong vòng 5-30p
+        interval = random.randint(5, 30)
         new_diff = min(100, max(0, word_data['difficulty'] - random.randint(10, 20)))
         
     next_review = now + datetime.timedelta(minutes=interval)
@@ -219,39 +215,31 @@ def get_user_stats():
     conn.close()
     return row
 
-# ==========================================
-# 4. REVIEW SELECTION (PHASE 8)
-# ==========================================
 def select_review_words(limit=SESSION_LIMIT):
     conn = get_db()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # 1. Failed words due
     failed_due = conn.execute(
         "SELECT * FROM words WHERE wrong_count > correct_count AND next_review <= ? ORDER BY next_review ASC", (now_str,)
     ).fetchall()
     
-    # 2. New words
     new_words = conn.execute(
         "SELECT * FROM words WHERE status = 'new' ORDER BY id ASC"
     ).fetchall()
     
-    # 3. Review due
     review_due = conn.execute(
         "SELECT * FROM words WHERE status != 'new' AND next_review <= ? ORDER BY next_review ASC", (now_str,)
     ).fetchall()
     
     conn.close()
     
-    # Selection logic
     results = []
-    
     for lst in [failed_due, new_words, review_due]:
-        random.shuffle(lst) # Shuffle trong group để tránh cứng nhắc
+        random.shuffle(lst)
         for row in lst:
             if len(results) >= limit:
                 break
-            if not any(r['id'] == row['id'] for r in results): # Chống trùng
+            if not any(r['id'] == row['id'] for r in results):
                 results.append(dict(row))
         if len(results) >= limit:
             break
@@ -259,7 +247,7 @@ def select_review_words(limit=SESSION_LIMIT):
     return results
 
 # ==========================================
-# 5. TAB 1: SCAN TEXT (PHASE 3)
+# 4. TAB 1: SCAN TEXT
 # ==========================================
 def render_scan_tab():
     st.header("📥 Scan & Extract Words")
@@ -305,7 +293,6 @@ def render_scan_tab():
             for item in results:
                 try:
                     norm = normalize_word(item['word'])
-                    # Kiểm tra trùng lặp
                     exist = conn.execute("SELECT id FROM words WHERE normalized_word = ?", (norm,)).fetchone()
                     if not exist:
                         conn.execute('''
@@ -318,8 +305,8 @@ def render_scan_tab():
                             item['example_sentence'], min(100, max(0, item.get('difficulty', 15))), now
                         ))
                         added += 1
-                except Exception as e:
-                    pass # Bỏ qua lỗi insert của từ lẻ tẻ
+                except Exception:
+                    pass
                     
             conn.commit()
             conn.close()
@@ -331,20 +318,12 @@ def render_scan_tab():
                 st.info("No new words found (they might be too basic or already exist).")
 
 # ==========================================
-# 6. TAB 2: REVIEW SYSTEM (PHASE 5 & 6 & 7)
+# 5. TAB 2: REVIEW SYSTEM
 # ==========================================
 def generate_question(word_data):
-    # Chọn random 1 trong 5 type. 
-    # TYPE 1: Context Fill-in-the-Blank
-    # TYPE 2: Vietnamese -> choose English meaning
-    # TYPE 3: Vietnamese meaning -> listen to 4 English choices -> choose matching word
-    # TYPE 4: Spelling
-    # TYPE 5: Choose IPA
-    
     q_types = ['fill_blank', 'vi_to_en', 'listening_mcq', 'spelling', 'ipa_mcq']
     chosen_type = random.choice(q_types)
     
-    # Đối với TYPE 2, 3, 5 cần lấy 3 distractors
     conn = get_db()
     distractors_raw = conn.execute("SELECT word, meaning_vi, ipa FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3", (word_data['id'],)).fetchall()
     conn.close()
@@ -358,7 +337,6 @@ def generate_question(word_data):
     }
     
     if chosen_type == 'fill_blank' or chosen_type == 'spelling':
-        # AI generate context
         diff = word_data['difficulty']
         prompt = f"""
         Generate a fill-in-the-blank English sentence for the word '{word_data['word']}'. 
@@ -386,7 +364,6 @@ def generate_question(word_data):
         
     elif chosen_type == 'ipa_mcq':
         options = [word_data['ipa']] + [d['ipa'] for d in distractors if d['ipa']]
-        # Pad if missing
         while len(options) < 4: options.append(f"/{word_data['word'][:3]}.../")
         options = list(set(options))[:4]
         random.shuffle(options)
@@ -419,8 +396,6 @@ def process_answer(word_data, is_correct):
     ''', (new_diff, now_str, next_rev, 1 if is_correct else 0, 0 if is_correct else 1, new_streak, status, word_data['id']))
     conn.commit()
     conn.close()
-    
-    return is_correct
 
 def render_review_tab():
     st.header("⚔️ Review Session")
@@ -469,7 +444,7 @@ def render_review_tab():
         with st.spinner("Preparing question..."):
             session['current_q'] = generate_question(word)
             session['answered'] = False
-            session['start_time'] = time.time()  # Bắt đầu tính giờ
+            session['start_time'] = time.time()
             
     q = session['current_q']
     
@@ -480,7 +455,7 @@ def render_review_tab():
     # HIỂN THỊ CÂU HỎI
     st.subheader(f"Type: {q['type'].replace('_', ' ').title()}")
     
-    # HỆ THỐNG ĐẾM NGƯỢC (JS Timer cho UI)
+    # ĐẾM NGƯỢC THỜI GIAN (20 Giây)
     time_limit = 20
     if not session['answered']:
         st.markdown(f"""
@@ -544,24 +519,21 @@ def render_review_tab():
         session['answered'] = True
         elapsed_time = time.time() - session['start_time']
         
-        # Buffer 2 giây cho độ trễ mạng
-        is_timeout = elapsed_time > (time_limit + 2) 
+        is_timeout = elapsed_time > (time_limit + 2) # Dư 2s độ trễ mạng
         
         if idk:
             is_correct = False
-            session['fail_reason'] = "Bạn đã chọn chưa thuộc."
+            session['fail_reason'] = "Bạn đã chọn chưa thuộc từ này."
         elif is_timeout:
             is_correct = False
-            session['fail_reason'] = "Hết thời gian trả lời (20s)!"
+            session['fail_reason'] = "Đã quá thời gian trả lời (20 giây)!"
         else:
             session['fail_reason'] = ""
-            # Chấm điểm bình thường
             if q['type'] in ['fill_blank', 'spelling']:
                 is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
             else:
                 is_correct = user_ans == q['correct_answer']
             
-        # Tính XP và Lưu DB
         if is_correct:
             session['correct'] += 1
             st.session_state.session_combo += 1
@@ -577,7 +549,7 @@ def render_review_tab():
             
         process_answer(word, is_correct)
 
-    # SAU KHI TRẢ LỜI -> HIỂN THỊ KẾT QUẢ ĐỨNG YÊN VÀ ĐỢI BẤM NEXT
+    # SAU KHI TRẢ LỜI -> HIỂN THỊ KẾT QUẢ ĐỨNG YÊN ĐỢI BẤM TIẾP TỤC
     if session['answered']:
         st.divider()
         if session.get('is_correct'):
@@ -590,7 +562,7 @@ def render_review_tab():
         if q['type'] == 'ipa_mcq':
             st.info(f"**Word:** {word['word']}")
             
-        # AUDIO SẼ ĐƯỢC PHÁT VÀ NẰM TRÊN MÀN HÌNH CHỜ BẠN NGHE XONG
+        # AUDIO PHÁT TRỌN VẸN
         play_audio(word['word'], autoplay=True)
         
         if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
@@ -599,15 +571,13 @@ def render_review_tab():
             session['answered'] = False
             st.rerun()
 
-
 # ==========================================
-# 7. TAB 3: NOTEBOOK & READING (PHASE 4 & 10)
+# 6. TAB 3: NOTEBOOK & READING
 # ==========================================
 def render_notebook_tab():
     st.header("📚 Vocabulary Notebook")
     conn = get_db()
     
-    # Filter
     status_filter = st.selectbox("Status Filter", ["All", "new", "learning", "mastered"])
     
     query = "SELECT * FROM words"
@@ -640,7 +610,6 @@ def render_notebook_tab():
     st.subheader("📖 AI Reading Generator")
     st.write("Generate a mini-reading using your grouped vocabulary topics.")
     
-    # Group topics
     topics = conn.execute("SELECT topic, COUNT(*) as cnt FROM words GROUP BY topic HAVING cnt >= 5").fetchall()
     conn.close()
     
@@ -675,15 +644,13 @@ def render_notebook_tab():
                     st.success("Reading Generated!")
                     st.markdown(f"### {res.get('title', 'Reading')}")
                     st.write(res['content'])
-                    # MVP: Not fully saving reading scheduling to keep code size manageable, but demonstrating output.
                 else:
                     st.error("Failed to generate reading.")
 
 # ==========================================
-# 8. MAIN APP LAYOUT
+# 7. MAIN LAYOUT
 # ==========================================
 def main():
-    # Khởi tạo DB
     init_db()
     
     if 'session_xp' not in st.session_state:
