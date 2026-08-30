@@ -409,7 +409,55 @@ def render_review_tab():
     if st.session_state.review_session is None:
         words = select_review_words()
         if not words:
-            st.success("You're all caught up! No words to review right now. Come back later.")
+            st.success("🎉 You're all caught up! No words to review right now.")
+            
+            # --- BẮT ĐẦU TÍNH GIỜ ĐẾN BÀI TEST TIẾP THEO ---
+            conn = get_db()
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Tìm từ vựng có lịch ôn tập gần nhất trong tương lai
+            next_word = conn.execute(
+                "SELECT next_review FROM words WHERE next_review > ? AND status != 'new' ORDER BY next_review ASC LIMIT 1", 
+                (now_str,)
+            ).fetchone()
+            conn.close()
+
+            if next_word and next_word['next_review']:
+                next_time_str = next_word['next_review']
+                next_time = datetime.datetime.strptime(next_time_str, "%Y-%m-%d %H:%M:%S")
+                now = datetime.datetime.now()
+                diff = next_time - now
+                total_seconds = int(diff.total_seconds())
+                
+                if total_seconds > 0:
+                    # Hiển thị đồng hồ đếm ngược bằng Javascript
+                    st.markdown(f"""
+                        <div style="text-align: center; padding: 20px; background-color: #262730; border-radius: 10px; margin-top: 20px;">
+                            <h4 style="margin:0; color: #fafafa;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
+                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;"></div>
+                        </div>
+                        <script>
+                            // Lấy thời gian hiện tại của trình duyệt + số giây chờ
+                            var countDownDate = new Date().getTime() + ({total_seconds} * 1000);
+                            
+                            var x = setInterval(function() {{
+                                var now = new Date().getTime();
+                                var distance = countDownDate - now;
+                                
+                                var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                                var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                                var seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                                
+                                document.getElementById("next_review_countdown").innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
+                                
+                                if (distance < 0) {{
+                                    clearInterval(x);
+                                    document.getElementById("next_review_countdown").innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
+                                }}
+                            }}, 1000);
+                        </script>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
             return
             
         if st.button("🚀 Start Review Session", type="primary"):
