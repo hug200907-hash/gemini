@@ -638,53 +638,96 @@ def render_review_tab():
 # 6. TAB 3: NOTEBOOK & READING
 # ==========================================
 def render_notebook_tab():
-    st.header("📚 Vocabulary Notebook")
+    st.header("📚 Sổ tay từ vựng (Notebook)")
     conn = get_db()
     
-    status_filter = st.selectbox("Status Filter", ["All", "new", "learning", "mastered"])
+    # 1. THANH TÌM KIẾM & BỘ LỌC (Hiển thị trên cùng 1 hàng)
+    col_search, col_filter = st.columns([2, 1])
+    with col_search:
+        search_term = st.text_input("🔍 Tìm kiếm từ vựng...", placeholder="Nhập từ tiếng Anh hoặc nghĩa tiếng Việt...")
+    with col_filter:
+        status_filter = st.selectbox("📌 Trạng thái", ["Tất cả", "new", "learning", "mastered"])
     
-    query = "SELECT * FROM words"
+    # Xây dựng câu truy vấn dựa trên bộ lọc
+    query = "SELECT * FROM words WHERE 1=1"
     params = []
-    if status_filter != "All":
-        query += " WHERE status = ?"
+    
+    if status_filter != "Tất cả":
+        query += " AND status = ?"
         params.append(status_filter)
+        
+    if search_term:
+        # Tìm theo từ tiếng Anh, nghĩa tiếng Việt hoặc chủ đề
+        query += " AND (word LIKE ? OR meaning_vi LIKE ? OR topic LIKE ?)"
+        params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
         
     query += " ORDER BY difficulty DESC"
     words = conn.execute(query, params).fetchall()
     
-    st.write(f"Total words: **{len(words)}**")
+    st.write(f"📝 Tổng số từ hiện có: **{len(words)}**")
+    st.divider()
     
+    # 2. HIỂN THỊ DẠNG THẺ (CARD LAYOUT) - Trực quan, không cần click mở
     if words:
-        for w in words:
-            with st.expander(f"{w['word']} ({w['status']}) - {w['meaning_vi']}"):
-                st.write(f"**IPA:** {w['ipa']}")
-                st.write(f"**Meaning (EN):** {w['meaning_en']}")
-                st.write(f"**Topic:** {w['topic']}")
-                st.write(f"**Difficulty:** {w['difficulty']}/100")
-                st.write(f"**Example:** {w['example_sentence']}")
-                col1, col2 = st.columns(2)
-                col1.write(f"Correct: {w['correct_count']} | Wrong: {w['wrong_count']}")
-                if w['next_review']:
-                    col2.write(f"Next review: {w['next_review']}")
-                if st.button(f"🔊 Listen", key=f"listen_{w['id']}"):
-                    play_audio(w['word'])
+        # Chia thành 2 cột để hiển thị dạng lưới (Grid)
+        cols_per_row = 2
+        for i in range(0, len(words), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j in range(cols_per_row):
+                if i + j < len(words):
+                    w = words[i + j]
+                    with cols[j]:
+                        # Tạo khung viền (Card) bao quanh mỗi từ
+                        with st.container(border=True):
+                            
+                            # Dòng 1: Từ vựng + Biểu tượng trạng thái + Nút phát âm
+                            c_word, c_audio = st.columns([4, 1])
+                            with c_word:
+                                # Icon trạng thái: Xanh lá (Mới), Xanh dương (Đang học), Lửa (Đã thuộc)
+                                status_icon = "🟢" if w['status'] == 'new' else "🔵" if w['status'] == 'learning' else "🔥"
+                                st.subheader(f"{w['word']} {status_icon}")
+                                st.caption(f"/{w['ipa']}/ • {w['part_of_speech']}")
+                            with c_audio:
+                                if st.button("🔊", key=f"audio_btn_{w['id']}", help="Nghe phát âm"):
+                                    play_audio(w['word'])
+                            
+                            # Dòng 2: Nghĩa tiếng Việt và Ví dụ (Hiển thị ngay lập tức)
+                            st.markdown(f"**🇻🇳 Nghĩa:** {w['meaning_vi']}")
+                            st.markdown(f"**📝 Ví dụ:** _{w['example_sentence']}_")
+                            
+                            # Dòng 3: Căn dưới cùng là các thông số thống kê nhỏ gọn
+                            next_rev = w['next_review'] if w['next_review'] else 'Chưa có'
+                            st.markdown(f"""
+                                <hr style="margin: 10px 0;">
+                                <div style='font-size: 0.85rem; color: #888;'>
+                                    <b>🏷️ Chủ đề:</b> {w['topic']} <br>
+                                    <b>🔄 Ôn tập kế tiếp:</b> {next_rev}<br>
+                                    <b>🎯 Độ khó:</b> {w['difficulty']}/100 &nbsp;|&nbsp; 
+                                    <b>📊 Tỉ lệ:</b> ✅ {w['correct_count']} - ❌ {w['wrong_count']}
+                                </div>
+                            """, unsafe_allow_html=True)
+    else:
+        st.info("Không tìm thấy từ vựng nào phù hợp với tìm kiếm của bạn.")
 
+    # ==========================================
+    # PHẦN AI READING GENERATOR GIỮ NGUYÊN
+    # ==========================================
     st.divider()
     st.subheader("📖 AI Reading Generator")
-    st.write("Generate a mini-reading using your grouped vocabulary topics.")
+    st.write("Tạo một đoạn văn ngắn sử dụng các từ vựng bạn đang học để luyện đọc.")
     
     topics = conn.execute("SELECT topic, COUNT(*) as cnt FROM words GROUP BY topic HAVING cnt >= 5").fetchall()
     conn.close()
     
     if not topics:
-        st.info("You need at least 5 words in a specific topic to generate a reading.")
+        st.info("Bạn cần ít nhất 5 từ vựng trong cùng một chủ đề để AI có thể tạo bài đọc.")
     else:
         topic_names = [f"{t['topic']} ({t['cnt']} words)" for t in topics]
-        sel_topic = st.selectbox("Select Topic to generate Reading", topic_names)
+        sel_topic = st.selectbox("Chọn chủ đề để tạo bài đọc:", topic_names)
         actual_topic = sel_topic.split(" (")[0]
         
-        if st.button("Generate Mini-Reading"):
-            with st.spinner("AI is crafting your reading..."):
+        if st.button("Tạo bài đọc (Mini-Reading)", type="primary"):
+            with st.spinner("AI đang soạn bài đọc cho bạn..."):
                 conn = get_db()
                 topic_words = conn.execute("SELECT word, difficulty FROM words WHERE topic = ? LIMIT 15", (actual_topic,)).fetchall()
                 conn.close()
@@ -704,11 +747,12 @@ def render_notebook_tab():
                 """
                 res = call_ai(prompt)
                 if res and 'content' in res:
-                    st.success("Reading Generated!")
-                    st.markdown(f"### {res.get('title', 'Reading')}")
-                    st.write(res['content'])
+                    st.success("Tạo bài đọc thành công!")
+                    with st.container(border=True):
+                        st.markdown(f"### {res.get('title', 'Reading')}")
+                        st.write(res['content'])
                 else:
-                    st.error("Failed to generate reading.")
+                    st.error("Có lỗi xảy ra khi tạo bài đọc.")
 
 # ==========================================
 # 7. MAIN LAYOUT
