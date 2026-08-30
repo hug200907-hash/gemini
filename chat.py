@@ -1,837 +1,754 @@
-import streamlit as st
 import json
-import os
 import random
 import re
 import time
 from datetime import datetime, timedelta
+import requests
+import streamlit as st
 
-# ==========================================
-# CONFIG & CONSTANTS
-# ==========================================
-DATA_FILE = "vocab_data.json"
+# ==============================================================================
+# 0. CONFIG & CONSTANTS
+# ==============================================================================
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "minimax/minimax-m3:free"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DATA_FILE = "vocab_data.json"
 
-TYPE_FILL_BLANK = "FILL_IN_THE_BLANK"
-TYPE_MEANING_MC = "MEANING_MULTIPLE_CHOICE"
-TYPE_LISTENING_MC = "LISTENING_MULTIPLE_CHOICE"
-TYPE_SPELLING = "SPELLING"
-TYPE_PHONETIC_MC = "PHONETIC_MULTIPLE_CHOICE"
+DEFAULT_STATS = {
+    "xp": 0,
+    "streak": 0,
+    "last_study_date": None,
+    "words_mastered": 0,
+    "total_reviews": 0,
+    "correct_reviews": 0,
+}
 
-ALL_TOPICS = [
-    "Daily life", "Work", "Technology", "Education", 
-    "Environment", "Travel", "Business", "Health", "Science"
+TOPICS = [
+    "Daily life", "Work", "Technology", "Education", "Environment",
+    "Business", "Health", "Science", "Travel", "General"
 ]
 
-# ==========================================
-# PAGE SETUP & CSS
-# ==========================================
-st.set_page_config(
-    page_title="VocabLingo - Gamified Vocab",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom Styling for Gamified UX
-st.markdown("""
-<style>
-    .stApp {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
-    .metric-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        text-align: center;
-        border: 1px solid #e9ecef;
-    }
-    .metric-val {
-        font-size: 24px;
-        font-weight: bold;
-        color: #2b2d42;
-    }
-    .metric-lbl {
-        font-size: 13px;
-        color: #6c757d;
-        text-transform: uppercase;
-    }
-    .success-box {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        border-left: 5px solid #28a745;
-    }
-    .error-box {
-        background-color: #f8d7da;
-        color: #721c24;
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        border-left: 5px solid #dc3545;
-    }
-    .hint-text {
-        font-family: monospace;
-        font-size: 22px;
-        letter-spacing: 4px;
-        color: #0d6efd;
-        background: #f1f3f5;
-        padding: 6px 12px;
-        border-radius: 6px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ==========================================
-# PERSISTENCE & DATA MANAGEMENT
-# ==========================================
+# ==============================================================================
+# 1. PERSISTENCE (LOCAL JSON)
+# ==============================================================================
 def load_data():
-    """Tải dữ liệu từ local file JSON. Nếu chưa có, tạo cấu trúc rỗng."""
-    default_structure = {
-        "vocabulary": [],
-        "stats": {
-            "xp": 0,
-            "streak": 1,
-            "last_active": datetime.now().strftime("%Y-%m-%d"),
-            "total_reviews": 0,
-            "correct_reviews": 0
-        },
-        "readings": []
-    }
-    if not os.path.exists(DATA_FILE):
-        save_data(default_structure)
-        return default_structure
+    """Tải dữ liệu từ file local JSON. Tạo mới nếu chưa có."""
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Ensure keys exist
-            if "vocabulary" not in data: data["vocabulary"] = []
-            if "stats" not in data: data["stats"] = default_structure["stats"]
-            if "readings" not in data: data["readings"] = []
+            if "vocabulary" not in data:
+                data["vocabulary"] = []
+            if "stats" not in data:
+                data["stats"] = DEFAULT_STATS.copy()
+            if "readings" not in data:
+                data["readings"] = []
             return data
-    except Exception as e:
-        st.error(f"Error loading data file: {e}")
-        return default_structure
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            "vocabulary": [],
+            "stats": DEFAULT_STATS.copy(),
+            "readings": []
+        }
 
 def save_data(data):
-    """Lưu dữ liệu ra local file JSON."""
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        st.error(f"Error saving data file: {e}")
+    """Lưu dữ liệu vào file local JSON."""
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ==========================================
-# OPENROUTER AI HELPER
-# ==========================================
-def call_openrouter(prompt, system_prompt="You are a helpful language learning assistant. Response MUST be strict valid JSON only, without Markdown code blocks or extra explanations."):
-    """Gọi OpenRouter API với retry và fallback xử lý JSON an toàn."""
-    try:
-        api_key = st.secrets["OPENROUTER_API_KEY"]
-    except KeyError:
-        st.error("⚠️ Missing OPENROUTER_API_KEY in Streamlit Secrets!")
+# ==============================================================================
+# 2. OPENROUTER AI HELPER
+# ==============================================================================
+def call_openrouter(messages, temperature=0.7, retries=2):
+    """
+    Gọi OpenRouter API an toàn với cơ chế retry và bắt lỗi.
+    Lấy API key từ st.secrets["OPENROUTER_API_KEY"].
+    """
+    api_key = st.secrets.get("OPENROUTER_API_KEY", None)
+    if not api_key:
+        st.error("❌ Không tìm thấy OPENROUTER_API_KEY trong Streamlit Secrets!")
         return None
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://streamlit.io",
-        "X-Title": "VocabLingo App"
+        "X-Title": "Spaced Repetition Vocab App"
     }
 
     payload = {
         "model": DEFAULT_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.4
+        "messages": messages,
+        "temperature": temperature,
+        "response_format": {"type": "json_object"}
     }
 
-    max_retries = 2
-    for attempt in range(max_retries + 1):
+    for attempt in range(retries + 1):
         try:
-            response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=25)
-            if response.status_code == 200:
-                result = response.json()
-                content = result["choices"][0]["message"]["content"].strip()
-                
-                # Cleanup potential Markdown block
-                if content.startswith("```"):
-                    content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
-                    content = re.sub(r"\n?```$", "", content)
-                content = content.strip()
-                
-                return json.loads(content)
-            else:
-                st.warning(f"AI API returned status {response.status_code}. Retrying...")
-        except (requests.RequestException, json.JSONDecodeError) as e:
-            if attempt == max_retries:
-                st.error(f"AI API Call failed after retries: {e}")
+            response = requests.post(
+                OPENROUTER_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=20
+            )
+            response.raise_for_status()
+            res_json = response.json()
+            content = res_json['choices'][0]['message']['content']
+            
+            # Cleaning JSON Markdown format block if present
+            content_clean = re.sub(r"^```json\s*", "", content.strip())
+            content_clean = re.sub(r"\s*```$", "", content_clean)
+            
+            return json.loads(content_clean)
+        except Exception as e:
+            if attempt == retries:
+                st.warning(f"⚠️ Lỗi kết nối AI hoặc JSON malformed: {str(e)}")
                 return None
             time.sleep(1)
     return None
 
-import requests # Import at top level needed
-
-# ==========================================
-# AUDIO PLAYER (BROWSER WEB SPEECH API)
-# ==========================================
-def play_audio(word):
-    """Sử dụng HTML/JS Web Speech API để phát âm ngay trên trình duyệt."""
-    clean_word = word.replace("'", "\\'").replace('"', '\\"')
-    js_code = f"""
-    <script>
-        (function() {{
-            if ('speechSynthesis' in window) {{
-                window.speechSynthesis.cancel();
-                var msg = new SpeechSynthesisUtterance('{clean_word}');
-                msg.lang = 'en-US';
-                msg.rate = 0.85;
-                window.speechSynthesis.speak(msg);
-            }}
-        }})();
-    </script>
+# ==============================================================================
+# 3. ALGORITHMS & HELPERS
+# ==============================================================================
+def calculate_hint(word_str, difficulty):
     """
-    st.components.v1.html(js_code, height=0, width=0)
-
-# ==========================================
-# ALGORITHM: HINT GENERATION (DẠNG 1 & 4)
-# ==========================================
-def calculate_hint(word, difficulty):
+    Tạo hint dựa trên difficulty (0-100).
+    Thuật toán ưu tiên:
+    1. Nguyên âm (a, e, i, o, u)
+    2. Phụ âm
+    3. Reveal ít hơn khi difficulty cao.
     """
-    Tạo hint thông minh:
-    1. Ưu tiên tiết lộ nguyên âm (a, e, i, o, u)
-    2. Tiếp theo ưu tiên phụ âm gần nguyên âm
-    3. Tránh reveal các chữ đứng sát nhau nếu có thể
-    4. Difficulty càng cao (0-100) -> tiết lộ càng ít chữ
-    """
-    word_len = len(word)
-    if word_len <= 2:
-        return word[0] + "_" * (word_len - 1)
+    word_str = word_str.strip()
+    n = len(word_str)
+    if n <= 3:
+        # Từ quá ngắn: chỉ reveal chữ đầu nếu difficulty thấp
+        return word_str[0] + "_" * (n - 1) if difficulty < 50 else "_" * n
 
-    # Xác định số lượng chữ cái được tiết lộ dựa trên difficulty
+    # Số ký tự được hiển thị dựa theo difficulty
     if difficulty < 30:
-        reveal_ratio = 0.6
+        reveal_count = max(2, int(n * 0.5))
     elif difficulty < 70:
-        reveal_ratio = 0.4
+        reveal_count = max(1, int(n * 0.3))
     else:
-        reveal_ratio = 0.25
+        reveal_count = max(1, int(n * 0.15))
 
-    target_reveal_count = max(1, min(word_len - 1, int(word_len * reveal_ratio)))
+    vowels = ['a', 'e', 'i', 'o', 'u']
+    vowel_indices = [i for i, ch in enumerate(word_str.lower()) if ch in vowels]
+    consonant_indices = [i for i, ch in enumerate(word_str.lower()) if ch.isalpha() and ch not in vowels]
 
-    vowels = set("aeiouAEIOU")
-    word_indices = list(range(word_len))
-    
-    # Phân loại chỉ số chữ cái
-    vowel_indices = [i for i in word_indices if word[i] in vowels]
-    
-    # Phụ âm kề nguyên âm
-    adj_consonant_indices = []
-    for i in word_indices:
-        if word[i] not in vowels:
-            has_adj_vowel = (i > 0 and word[i-1] in vowels) or (i < word_len - 1 and word[i+1] in vowels)
-            if has_adj_vowel:
-                adj_consonant_indices.append(i)
-                
-    other_consonant_indices = [i for i in word_indices if i not in vowel_indices and i not in adj_consonant_indices]
+    indices_to_show = set()
 
-    # Thứ tự ưu tiên
+    # Ưu tiên 1: Nguyên âm
     random.shuffle(vowel_indices)
-    random.shuffle(adj_consonant_indices)
-    random.shuffle(other_consonant_indices)
-    
-    candidate_order = vowel_indices + adj_consonant_indices + other_consonant_indices
-    
-    # Lựa chọn chỉ số sao cho ít bị dính liền nhau nhất
-    revealed_indices = []
-    for idx in candidate_order:
-        if len(revealed_indices) >= target_reveal_count:
-            break
-        # Ưu tiên không kề sát chữ đã chọn nếu còn khoảng trống
-        if not any(abs(idx - r) == 1 for r in revealed_indices) or len(revealed_indices) < 1:
-            revealed_indices.append(idx)
-            
-    # Nếu chưa đủ số lượng reveal target, chấp nhận chọn kề sát
-    if len(revealed_indices) < target_reveal_count:
-        for idx in candidate_order:
-            if idx not in revealed_indices:
-                revealed_indices.append(idx)
-                if len(revealed_indices) >= target_reveal_count:
-                    break
+    for idx in vowel_indices:
+        if len(indices_to_show) < reveal_count:
+            indices_to_show.add(idx)
 
-    # Dựng chuỗi hint
+    # Ưu tiên 2: Phụ âm nếu chưa đủ quota
+    random.shuffle(consonant_indices)
+    for idx in consonant_indices:
+        if len(indices_to_show) < reveal_count:
+            indices_to_show.add(idx)
+
+    # Build pattern String
     hint_chars = []
-    for i in range(word_len):
-        if i in revealed_indices or word[i] in " -'":
-            hint_chars.append(word[i])
+    for i, ch in enumerate(word_str):
+        if not ch.isalpha():
+            hint_chars.append(ch)
+        elif i in indices_to_show:
+            hint_chars.append(ch)
         else:
             hint_chars.append("_")
-            
+
     return " ".join(hint_chars)
 
-# ==========================================
-# ALGORITHM: SPACED REPETITION (SHORT INTERVAL)
-# ==========================================
 def calculate_next_review(word_item, is_correct):
     """
-    Short Spaced Repetition Logic:
-    - new -> 5-15 phút
-    - correct lần lượt: 30m -> 2h -> 8h -> 1 ngày -> max 3-5 ngày
-    - wrong -> 10-20 phút, max khoảng 1 ngày
-    - Thay đổi difficulty: +5 nếu đúng, -8 nếu sai
+    Short Spaced Repetition Logic.
+    Interval rất ngắn để duy trì momentum học tập.
     """
     now = datetime.now()
-    rev_count = word_item.get("review_count", 0) + 1
-    word_item["review_count"] = rev_count
+    review_count = word_item.get("review_count", 0) + 1
     
     if is_correct:
         word_item["correct_count"] = word_item.get("correct_count", 0) + 1
-        word_item["difficulty"] = min(100, word_item.get("difficulty", 20) + 5)
+        word_item["difficulty"] = max(0, word_item.get("difficulty", 20) + 5)
         
-        # Interval ladder (minutes)
-        if rev_count == 1:
-            delta_min = 30
-        elif rev_count == 2:
-            delta_min = 120 # 2 hours
-        elif rev_count == 3:
-            delta_min = 480 # 8 hours
-        elif rev_count == 4:
-            delta_min = 1440 # 1 day
-        else:
-            delta_min = min(7200, 1440 * (1.5 ** (rev_count - 4))) # Max ~5 days
-            
-        if word_item.get("correct_count", 0) >= 4 and word_item.get("difficulty", 0) >= 50:
-            word_item["status"] = "mastered"
-        else:
-            word_item["status"] = "learning"
+        # Short intervals: 15m -> 1h -> 4h -> 12h -> 1d -> 2d -> max 5d
+        intervals = [15, 60, 240, 720, 1440, 2880, 7200]
+        idx = min(review_count - 1, len(intervals) - 1)
+        next_minutes = intervals[idx]
     else:
         word_item["wrong_count"] = word_item.get("wrong_count", 0) + 1
         word_item["difficulty"] = max(0, word_item.get("difficulty", 20) - 8)
-        word_item["status"] = "learning"
-        # Reset interval về ngắn khi trả lời sai
-        delta_min = random.randint(10, 20)
+        # Nếu sai: giảm interval mạnh xuống 5 - 15 phút
+        next_minutes = random.choice([5, 10, 15])
 
-    next_time = now + timedelta(minutes=delta_min)
-    word_item["last_review"] = now.strftime("%Y-%m-%d %H:%M")
-    word_item["next_review"] = next_time.strftime("%Y-%m-%d %H:%M")
+    # Check Mastered Status
+    if word_item.get("correct_count", 0) >= 4 and word_item.get("wrong_count", 0) <= 1:
+        word_item["status"] = "mastered"
+    else:
+        word_item["status"] = "learning"
+
+    word_item["review_count"] = review_count
+    word_item["last_review"] = now.isoformat()
+    word_item["next_review"] = (now + timedelta(minutes=next_minutes)).isoformat()
     return word_item
 
-# ==========================================
-# REVIEW SESSION GENERATOR
-# ==========================================
-def select_review_words(all_vocab, max_words=6):
-    """Lựa chọn tối đa 6 từ ưu tiên theo thứ tự: 1. Sai trước đó, 2. new, 3. Đã đến hạn"""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    
-    due_wrong = []
-    due_words = []
-    new_words = []
-    others = []
-    
-    for v in all_vocab:
-        next_rev = v.get("next_review", "")
-        if v.get("status") == "new":
-            new_words.append(v)
-        elif next_rev and next_rev <= now_str:
-            if v.get("wrong_count", 0) > v.get("correct_count", 0):
-                due_wrong.append(v)
-            else:
-                due_words.append(v)
-        else:
-            others.append(v)
-            
-    random.shuffle(due_wrong)
-    random.shuffle(due_words)
-    random.shuffle(new_words)
-    random.shuffle(others)
-    
-    selected = (due_wrong + due_words + new_words + others)[:max_words]
-    return selected
-
-# ==========================================
-# QUESTION BUILDERS WITH AI / FALLBACK
-# ==========================================
-def generate_question_data(word_item, all_vocab):
-    """Tạo dữ liệu câu hỏi ngẫu nhiên 1 trong 5 dạng."""
-    q_type = random.choice([
-        TYPE_FILL_BLANK,
-        TYPE_MEANING_MC,
-        TYPE_LISTENING_MC,
-        TYPE_SPELLING,
-        TYPE_PHONETIC_MC
-    ])
-    
-    target_word = word_item["word"]
-    meaning = word_item["meaning_vi"]
-    diff = word_item.get("difficulty", 20)
-    
-    # Chuẩn bị Distractors từ vocab hiện có hoặc fallback
-    other_words = [v["word"] for v in all_vocab if v["word"].lower() != target_word.lower()]
-    random.shuffle(other_words)
-    
-    distractors_en = other_words[:3]
-    while len(distractors_en) < 3:
-        distractors_en.append(random.choice(["confident", "generous", "curious", "relevant", "remarkable", "subsequent"]))
-        
-    other_phonetics = [v["phonetic"] for v in all_vocab if v.get("phonetic") and v["word"].lower() != target_word.lower()]
-    random.shuffle(other_phonetics)
-    distractors_ipa = other_phonetics[:3]
-    while len(distractors_ipa) < 3:
-        distractors_ipa.append(random.choice(["/ˈrelevənt/", "/rɪˈzɪstənt/", "/ˈriːmɑːrkəbəl/", "/kənˈsɪdərət/"]))
-
-    # Yêu cầu AI tạo câu ví dụ mới phù hợp với difficulty
-    prompt = f"""
-    Create a sentence in simple English for the word '{target_word}' (meaning: {meaning}).
-    Target Difficulty Level (0-100): {diff}.
-    Constraint: If difficulty is low (<40), use extremely simple grammar and obvious context.
-    Do NOT make complex sentences.
-    Return JSON format:
-    {{
-        "sentence": "Sentence with the word {target_word} included",
-        "blank_sentence": "Sentence with '______' replacing {target_word}"
-    }}
+def trigger_audio(text):
+    """Web Speech API JavaScript Injection cho Audio TTS ngay lập tức."""
+    js_code = f"""
+    <script>
+        var msg = new SpeechSynthesisUtterance("{text}");
+        msg.lang = 'en-US';
+        msg.rate = 0.85;
+        window.speechSynthesis.speak(msg);
+    </script>
     """
+    st.components.v1.html(js_code, height=0)
+
+# ==============================================================================
+# 4. QUESTION GENERATION ENGINE (AI + FALLBACK)
+# ==============================================================================
+def generate_question_for_word(word_item, existing_words):
+    """
+    Tạo ngẫu nhiên 1 trong 5 dạng câu hỏi phù hợp với difficulty của từ.
+    """
+    q_type = random.choice([1, 2, 3, 4, 5])
+    word = word_item["word"]
+    meaning = word_item["meaning_vi"]
+    difficulty = word_item.get("difficulty", 20)
+
+    # Lấy danh sách từ khác làm distractors
+    other_words = [w for w in existing_words if w["word"].lower() != word.lower()]
+    random.shuffle(other_words)
+
+    # Prompt AI để lấy câu ví dụ/context adaptive
+    prompt = f"""
+    Generate a simple english sentence for the word '{word}' (meaning: '{meaning}').
+    Difficulty scale (0-100): {difficulty}.
+    Rules:
+    - If difficulty is low (<40), use extremely simple grammar and clear context.
+    - Do not use overly complex academic words.
+    - Return JSON format: {{"sentence": "The exact sentence with the target word", "blank_sentence": "Sentence with target word replaced by ______"}}
+    """
+
+    ai_res = call_openrouter([{"role": "user", "content": prompt}], temperature=0.7)
     
-    ai_res = call_openrouter(prompt)
-    if ai_res and "sentence" in ai_res and "blank_sentence" in ai_res:
+    if ai_res and "sentence" in ai_res:
         sentence = ai_res["sentence"]
-        blank_sentence = ai_res["blank_sentence"]
+        blank_sentence = ai_res.get("blank_sentence", sentence.replace(word, "______"))
     else:
-        # Fallback if AI fails
-        sentence = word_item.get("example") or f"She was very {target_word} about the decision."
-        blank_sentence = sentence.replace(target_word, "______").replace(target_word.capitalize(), "______")
+        # Fallback local nếu AI timeout/lỗi
+        ex = word_item.get("example", f"I want to learn about {word}.")
+        sentence = ex
+        blank_sentence = re.sub(re.escape(word), "______", ex, flags=re.IGNORECASE)
+        if "______" not in blank_sentence:
+            blank_sentence = f"Fill the word '{meaning}': ______"
 
-    hint = calculate_hint(target_word, diff)
-    
-    # Chuẩn bị lựa chọn trắc nghiệm
-    mc_options = distractors_en + [target_word]
-    random.shuffle(mc_options)
-    
-    ipa_options = distractors_ipa + [word_item.get("phonetic", "/.../")]
-    random.shuffle(ipa_options)
+    # --- DẠNG 1: FILL IN THE BLANK ---
+    if q_type == 1:
+        return {
+            "type": 1,
+            "type_title": "✍️ Fill in the Blank",
+            "word": word,
+            "meaning": meaning,
+            "context": blank_sentence,
+            "hint": calculate_hint(word, difficulty),
+            "correct_answer": word
+        }
 
-    return {
-        "word_item": word_item,
-        "q_type": q_type,
-        "target_word": target_word,
-        "meaning": meaning,
-        "sentence": sentence,
-        "blank_sentence": blank_sentence,
-        "hint": hint,
-        "mc_options": mc_options,
-        "ipa_options": ipa_options
-    }
+    # --- DẠNG 2: CHỌN NGHĨA TIẾNG ANH ---
+    elif q_type == 2:
+        distractors = [w["word"] for w in other_words[:3]]
+        while len(distractors) < 3:
+            distractors.append(f"word_{random.randint(100,999)}")
+        options = distractors + [word]
+        random.shuffle(options)
+        return {
+            "type": 2,
+            "type_title": "🎯 Choose the English Word",
+            "word": word,
+            "meaning": meaning,
+            "prompt_text": f"Từ nào có nghĩa là: **'{meaning}'**?",
+            "options": options,
+            "correct_answer": word
+        }
 
-# ==========================================
-# MAIN APP FLOW
-# ==========================================
-def main():
-    data = load_data()
-    
-    # Initialize Session State Variables
+    # --- DẠNG 3: NGHE + CHỌN TỪ ---
+    elif q_type == 3:
+        distractors = [w["word"] for w in other_words[:3]]
+        while len(distractors) < 3:
+            distractors.append(f"option_{random.randint(10,99)}")
+        options = distractors + [word]
+        random.shuffle(options)
+        return {
+            "type": 3,
+            "type_title": "🎧 Listen & Select",
+            "word": word,
+            "meaning": meaning,
+            "prompt_text": f"Nghe phát âm và chọn từ đúng (Nghĩa: {meaning})",
+            "options": options,
+            "correct_answer": word
+        }
+
+    # --- DẠNG 4: SPELLING ---
+    elif q_type == 4:
+        return {
+            "type": 4,
+            "type_title": "🔤 Spelling Challenge",
+            "word": word,
+            "meaning": meaning,
+            "context": f"Nghĩa: **{meaning}** | Topic: {word_item.get('topic', 'General')}",
+            "hint": calculate_hint(word, difficulty),
+            "correct_answer": word
+        }
+
+    # --- DẠNG 5: CHỌN PHIÊN ÂM ---
+    else:
+        phonetic = word_item.get("phonetic", "/.../")
+        distractor_phonetics = [w.get("phonetic", "/.../") for w in other_words if w.get("phonetic")]
+        
+        # Fallback phonetics nếu thiếu
+        dummy_phonetics = ["/rɪˈlʌktənt/", "/ˈrelevənt/", "/rɪˈzɪstənt/", "/ˈkiːən/"]
+        for p in dummy_phonetics:
+            if p != phonetic and len(distractor_phonetics) < 3:
+                distractor_phonetics.append(p)
+
+        options = distractor_phonetics[:3] + [phonetic]
+        random.shuffle(options)
+        return {
+            "type": 5,
+            "type_title": "🗣️ Select Correct Pronunciation",
+            "word": word,
+            "meaning": meaning,
+            "prompt_text": f"Chọn phiên âm chuẩn IPA cho từ: **{word}** ({meaning})",
+            "options": options,
+            "correct_answer": phonetic
+        }
+
+# ==============================================================================
+# 5. STREAMLIT UI & TAB RENDERERS
+# ==============================================================================
+
+def init_session_state():
+    """Khởi tạo session_state cho ứng dụng."""
+    if "data" not in st.session_state:
+        st.session_state.data = load_data()
     if "session_active" not in st.session_state:
         st.session_state.session_active = False
-    if "review_queue" not in st.session_state:
-        st.session_state.review_queue = []
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 0
-    if "current_q_data" not in st.session_state:
-        st.session_state.current_q_data = None
+    if "current_queue" not in st.session_state:
+        st.session_state.current_queue = []
+    if "current_q_index" not in st.session_state:
+        st.session_state.current_q_index = 0
+    if "current_question" not in st.session_state:
+        st.session_state.current_question = None
     if "answered" not in st.session_state:
         st.session_state.answered = False
-    if "last_is_correct" not in st.session_state:
-        st.session_state.last_is_correct = False
-    if "session_correct_list" not in st.session_state:
-        st.session_state.session_correct_list = []
-    if "session_wrong_list" not in st.session_state:
-        st.session_state.session_wrong_list = []
-    if "session_xp_gained" not in st.session_state:
-        st.session_state.session_xp_gained = 0
-    if "combo_count" not in st.session_state:
-        st.session_state.combo_count = 0
+    if "session_stats" not in st.session_state:
+        st.session_state.session_stats = {"correct": 0, "total": 0, "xp_gained": 0}
+    if "combo" not in st.session_state:
+        st.session_state.combo = 0
+    if "temp_correct" not in st.session_state:
+        st.session_state.temp_correct = []
+    if "temp_wrong" not in st.session_state:
+        st.session_state.temp_wrong = []
 
-    # Sidebar Header & Gamification Stats
-    st.sidebar.title("⚡ VocabLingo")
-    st.sidebar.caption("Short-Spaced Repetition & Gamified Learning")
+# --- TAB 1: SCAN / ADD WORDS ---
+def render_tab_scan():
+    st.markdown("### 🔍 Scan Text & Instant Extract")
+    st.caption("Paste bất kỳ đoạn văn tiếng Anh nào. AI sẽ tự chọn các từ đáng học nhất và loại bỏ từ trùng lặp!")
     
-    stats = data["stats"]
-    st.sidebar.markdown(f"""
-    <div style="background-color:#f0f2f6; padding:12px; border-radius:10px; margin-bottom:15px;">
-        🔥 <b>Streak:</b> {stats.get('streak', 1)} ngày<br>
-        ⭐ <b>XP:</b> {stats.get('xp', 0)}<br>
-        📚 <b>Tổng từ:</b> {len(data['vocabulary'])} từ
-    </div>
-    """, unsafe_allow_html=True)
+    text_input = st.text_area("Nhập đoạn văn tiếng Anh:", height=150, placeholder="I was reluctant to accept the offer because the circumstances were rather complicated.")
+    
+    if st.button("🚀 SCAN TEXT", use_container_width=True):
+        if not text_input.strip():
+            st.warning("Vui lòng nhập đoạn văn trước khi Scan!")
+            return
 
-    # Top Tabs
-    tab1, tab2, tab3 = st.tabs(["📥 TAB 1 — SCAN / ADD", "🎮 TAB 2 — REVIEW", "📖 TAB 3 — NOTEBOOK & READING"])
+        with st.spinner("🤖 AI đang phân tích và lọc từ vựng..."):
+            existing_words = {w["word"].lower() for w in st.session_state.data["vocabulary"]}
+            
+            prompt = f"""
+            Analyze the following text and extract 3-6 valuable English vocabulary items to learn.
+            Text: "{text_input}"
 
-    # ==========================================
-    # TAB 1: SCAN TEXT
-    # ==========================================
-    with tab1:
-        st.header("Scan Text to Extract Vocabulary")
-        st.write("Dán một đoạn văn tiếng Anh bên dưới. AI sẽ tự động phân tích, loại bỏ từ đã học và trích xuất các từ mới đáng học.")
-        
-        sample_input = st.text_area("Nhập đoạn văn tiếng Anh:", height=120, placeholder="I was reluctant to accept the offer because the circumstances were rather complicated.")
-        
-        if st.button("🔍 SCAN TEXT", type="primary"):
-            if not sample_input.strip():
-                st.warning("Vui lòng nhập văn bản trước khi scan!")
-            else:
-                with st.spinner("AI đang phân tích văn bản và lọc từ vựng..."):
-                    existing_words = [v["word"].lower() for v in data["vocabulary"]]
-                    
-                    prompt = f"""
-                    Analyze this text and extract useful English vocabulary/phrases to learn:
-                    "{sample_input}"
-                    
-                    Rules:
-                    1. Skip basic words (e.g. 'is', 'the', 'because', 'accept', 'offer') unless they have high learning value.
-                    2. Exclude these existing words completely: {existing_words}.
-                    3. Provide Vietnamese meaning, part of speech, IPA phonetic, single main topic from {ALL_TOPICS}, and a short simple example.
-                    
-                    Return STRICT JSON array of objects:
-                    [
-                      {{
+            Rules:
+            1. Skip extremely basic words (e.g., 'is', 'the', 'go', 'happy').
+            2. For each word, provide: word, meaning_vi, part_of_speech, phonetic (IPA), topic (choose one: {', '.join(TOPICS)}), simple example sentence.
+            3. Do not include words already in this list: {list(existing_words)}
+            4. Return strictly JSON format:
+            {{
+                "words": [
+                    {{
                         "word": "reluctant",
-                        "meaning_vi": "miễn cưỡng, ngần ngại",
+                        "meaning_vi": "miễn cưỡng",
                         "part_of_speech": "adjective",
                         "phonetic": "/rɪˈlʌktənt/",
-                        "example": "She was reluctant to leave the house in heavy rain.",
-                        "topic": "Daily life"
-                      }}
-                    ]
-                    """
-                    
-                    res = call_openrouter(prompt)
-                    if res and isinstance(res, list):
-                        added_count = 0
-                        for item in res:
-                            w = item.get("word", "").strip()
-                            if w and w.lower() not in existing_words:
-                                new_vocab = {
-                                    "id": str(int(time.time() * 1000)) + str(random.randint(100, 999)),
-                                    "word": w,
-                                    "meaning_vi": item.get("meaning_vi", ""),
-                                    "part_of_speech": item.get("part_of_speech", ""),
-                                    "phonetic": item.get("phonetic", "/.../"),
-                                    "example": item.get("example", ""),
-                                    "topic": item.get("topic", "Daily life"),
-                                    "difficulty": 20, # Default initial easy difficulty
-                                    "status": "new",
-                                    "created_at": datetime.now().strftime("%Y-%m-%d"),
-                                    "last_review": None,
-                                    "next_review": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    "review_count": 0,
-                                    "correct_count": 0,
-                                    "wrong_count": 0
-                                }
-                                data["vocabulary"].append(new_vocab)
-                                existing_words.append(w.lower())
-                                added_count += 1
-                        
-                        save_data(data)
-                        if added_count > 0:
-                            st.success(f"🎉 Đã thêm thành công {added_count} từ mới vào Vocabulary Notebook!")
-                        else:
-                            st.info("Không tìm thấy từ mới phù hợp hoặc tất cả từ đã có trong bộ sưu tập.")
-                    else:
-                        st.error("Không thể phân tích đoạn văn hoặc AI trả về sai định dạng. Vui lòng thử lại!")
-
-    # ==========================================
-    # TAB 2: REVIEW (GAMIFIED SESSION)
-    # ==========================================
-    with tab2:
-        # Dashboard Overview
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        acc_rate = int((stats.get('correct_reviews', 0) / max(1, stats.get('total_reviews', 0))) * 100)
-        
-        with col_m1: st.markdown(f"<div class='metric-card'><div class='metric-val'>🔥 {stats.get('streak', 1)}</div><div class='metric-lbl'>Streak Days</div></div>", unsafe_allow_html=True)
-        with col_m2: st.markdown(f"<div class='metric-card'><div class='metric-val'>⭐ {stats.get('xp', 0)}</div><div class='metric-lbl'>Total XP</div></div>", unsafe_allow_html=True)
-        with col_m3: st.markdown(f"<div class='metric-card'><div class='metric-val'>📚 {len(data['vocabulary'])}</div><div class='metric-lbl'>Words Learned</div></div>", unsafe_allow_html=True)
-        with col_m4: st.markdown(f"<div class='metric-card'><div class='metric-val'>🎯 {acc_rate}%</div><div class='metric-lbl'>Accuracy</div></div>", unsafe_allow_html=True)
-
-        st.divider()
-
-        # START SESSION BUTTON
-        if not st.session_state.session_active:
-            st.subheader("Ready for a quick 6-word session?")
-            st.write("Mỗi lượt ôn tập chỉ gồm 5-6 từ, phản hồi lập tức, giúp tạo đà học tập mà không gây ngợp.")
+                        "topic": "Daily life",
+                        "example": "She was reluctant to leave."
+                    }}
+                ]
+            }}
+            """
             
-            if st.button("🚀 START REVIEW (6 WORDS)", type="primary", use_container_width=True):
-                review_list = select_review_words(data["vocabulary"], max_words=6)
-                if not review_list:
-                    st.info("🎉 Tất cả các từ đều đã ôn xong! Hãy dán thêm đoạn văn ở TAB 1 để nạp từ mới.")
+            res = call_openrouter([{"role": "user", "content": prompt}])
+            
+            if res and "words" in res and len(res["words"]) > 0:
+                added_count = 0
+                now_str = datetime.now().isoformat()
+                
+                for item in res["words"]:
+                    w_lower = item["word"].lower().strip()
+                    if w_lower not in existing_words:
+                        new_entry = {
+                            "id": str(random.randint(100000, 999999)),
+                            "word": item["word"].strip(),
+                            "meaning_vi": item.get("meaning_vi", ""),
+                            "part_of_speech": item.get("part_of_speech", ""),
+                            "phonetic": item.get("phonetic", ""),
+                            "topic": item.get("topic", "General"),
+                            "example": item.get("example", ""),
+                            "difficulty": 20, # Bắt đầu rất dễ
+                            "status": "new",
+                            "created_at": now_str,
+                            "last_review": None,
+                            "next_review": now_str, # Sẵn sàng học ngay
+                            "review_count": 0,
+                            "correct_count": 0,
+                            "wrong_count": 0
+                        }
+                        st.session_state.data["vocabulary"].append(new_entry)
+                        existing_words.add(w_lower)
+                        added_count += 1
+                
+                if added_count > 0:
+                    save_data(st.session_state.data)
+                    st.balloons()
+                    st.success(f"🎉 Đã thêm thành công {added_count} từ vựng mới vào Notebook!")
                 else:
-                    st.session_state.session_active = True
-                    st.session_state.review_queue = review_list
-                    st.session_state.current_index = 0
-                    st.session_state.answered = False
-                    st.session_state.session_correct_list = []
-                    st.session_state.session_wrong_list = []
-                    st.session_state.session_xp_gained = 0
-                    st.session_state.combo_count = 0
-                    st.session_state.current_q_data = generate_question_data(review_list[0], data["vocabulary"])
-                    st.rerun()
-
-        else:
-            # ACTIVE SESSION FLOW
-            queue = st.session_state.review_queue
-            idx = st.session_state.current_index
-            total_q = len(queue)
-
-            if idx >= total_q:
-                # SESSION COMPLETE SUMMARY
-                st.balloons()
-                st.markdown(f"""
-                <div class='success-box' style='text-align:center;'>
-                    <h2>🎉 Session Complete!</h2>
-                    <p style='font-size: 18px;'>Bạn vừa hoàn thành lượt ôn tập <b>{total_q} từ</b>!</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                c_len = len(st.session_state.session_correct_list)
-                w_len = len(st.session_state.session_wrong_list)
-                acc = int((c_len / max(1, total_q)) * 100)
-                
-                col_r1, col_r2, col_r3 = st.columns(3)
-                col_r1.metric("Đúng", f"{c_len} từ")
-                col_r2.metric("Chưa nhớ", f"{w_len} từ")
-                col_r3.metric("XP Nhận được", f"+{st.session_state.session_xp_gained} XP")
-
-                # Cập nhật global stats
-                stats["xp"] += st.session_state.session_xp_gained
-                stats["total_reviews"] += total_q
-                stats["correct_reviews"] += c_len
-                save_data(data)
-
-                if st.button("Trở về Dashboard", type="primary"):
-                    st.session_state.session_active = False
-                    st.rerun()
-
+                    st.info("💡 Tất cả các từ đáng học trong đoạn văn đều đã có trong Notebook của bạn!")
             else:
-                # RENDERING INDIVIDUAL QUESTION
-                q_data = st.session_state.current_q_data
-                w_item = q_data["word_item"]
+                st.error("Không thể trích xuất từ vựng. Vui lòng thử lại đoạn văn khác.")
 
-                # Progress Bar & Combo
-                st.progress((idx) / total_q, text=f"Câu hỏi {idx + 1} / {total_q}")
-                if st.session_state.combo_count > 1:
-                    st.caption(f"🔥 Combo Streak: x{st.session_state.combo_count} (+XP Multiplier!)")
+# --- TAB 2: REVIEW (MICRO-SESSION GAME) ---
+def render_tab_review():
+    stats = st.session_state.data["stats"]
+    
+    # 1. Header Metrics Dashboard
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🔥 Streak", f"{stats['streak']} Days")
+    col2.metric("⭐ Total XP", stats['xp'])
+    col3.metric("📚 Words", len(st.session_state.data["vocabulary"]))
+    acc = int((stats['correct_reviews'] / stats['total_reviews'] * 100)) if stats['total_reviews'] > 0 else 0
+    col4.metric("🎯 Accuracy", f"{acc}%")
 
-                q_type = q_data["q_type"]
+    st.markdown("---")
 
-                # --- RENDER QUESTION TYPES ---
-                st.markdown(f"### Dạng bài: {q_type.replace('_', ' ')}")
-
-                user_answer = None
-
-                if q_type == TYPE_FILL_BLANK:
-                    st.write(f"Điền từ thích hợp vào chỗ trống:")
-                    st.markdown(f"#### *\"{q_data['blank_sentence']}\"*")
-                    st.caption(f"Nghĩa: {q_data['meaning']}")
-                    st.markdown(f"Hint: <span class='hint-text'>{q_data['hint']}</span>", unsafe_allow_html=True)
-                    user_answer = st.text_input("Nhập từ tiếng Anh:", key=f"ans_{idx}").strip()
-
-                elif q_type == TYPE_MEANING_MC:
-                    st.write(f"Chọn từ tiếng Anh phù hợp với nghĩa:")
-                    st.markdown(f"### 🇻🇳 **\"{q_data['meaning']}\"**")
-                    user_answer = st.radio("Các lựa chọn:", q_data["mc_options"], key=f"ans_{idx}")
-
-                elif q_type == TYPE_LISTENING_MC:
-                    st.write(f"Nghe và chọn từ đúng cho nghĩa:")
-                    st.markdown(f"### 🇻🇳 **\"{q_data['meaning']}\"**")
-                    if st.button("🔊 Phát âm từ target", key=f"listen_btn_{idx}"):
-                        play_audio(q_data["target_word"])
-                    user_answer = st.radio("Các lựa chọn:", q_data["mc_options"], key=f"ans_{idx}")
-
-                elif q_type == TYPE_SPELLING:
-                    st.write(f"Viết lại chính xác từ tiếng Anh cho ngữ cảnh:")
-                    st.caption(f"Nghĩa: {q_data['meaning']}")
-                    st.markdown(f"Hint: <span class='hint-text'>{q_data['hint']}</span>", unsafe_allow_html=True)
-                    user_answer = st.text_input("Nhập chính xác spelling:", key=f"ans_{idx}").strip()
-
-                elif q_type == TYPE_PHONETIC_MC:
-                    st.write(f"Chọn IPA Phiên âm đúng cho từ có nghĩa:")
-                    st.markdown(f"### 🇻🇳 **\"{q_data['meaning']}\"** ({q_data['target_word']})")
-                    user_answer = st.radio("Các phiên âm IPA:", q_data["ipa_options"], key=f"ans_{idx}")
-
-                # --- SUBMISSION LOGIC ---
-                if not st.session_state.answered:
-                    if st.button("SUBMIT ANSWER", type="primary"):
-                        if not user_answer:
-                            st.warning("Vui lòng chọn hoặc nhập đáp án!")
-                        else:
-                            st.session_state.answered = True
-                            target = q_data["target_word"].lower()
-                            
-                            # Check Correctness
-                            if q_type == TYPE_PHONETIC_MC:
-                                is_correct = (user_answer == w_item.get("phonetic"))
-                            else:
-                                is_correct = (user_answer.lower() == target)
-
-                            st.session_state.last_is_correct = is_correct
-
-                            # Apply Spaced Repetition Logic & Update Word Data
-                            updated_w = calculate_next_review(w_item, is_correct)
-                            # Sync back to master vocabulary list
-                            for i, v in enumerate(data["vocabulary"]):
-                                if v["id"] == updated_w["id"]:
-                                    data["vocabulary"][i] = updated_w
-                                    break
-                            save_data(data)
-
-                            if is_correct:
-                                st.session_state.combo_count += 1
-                                xp_gain = 10 * min(3, st.session_state.combo_count)
-                                st.session_state.session_xp_gained += xp_gain
-                                st.session_state.session_correct_list.append(target)
-                            else:
-                                st.session_state.combo_count = 0
-                                st.session_state.session_wrong_list.append(target)
-
-                            st.rerun()
-
-                else:
-                    # FEEDBACK DISPLAY AFTER SUBMISSION
-                    is_corr = st.session_state.last_is_correct
-                    
-                    # MANDATORY SPEECH AUDIO PLAYBACK AFTER EACH ANSWER (RIGHT OR WRONG)
-                    play_audio(q_data["target_word"])
-
-                    if is_corr:
-                        st.markdown(f"""
-                        <div class='success-box'>
-                            ✅ <b>CHÍNH XÁC!</b> +10 XP <br>
-                            Từ: <b>{q_data['target_word']}</b> ({w_item.get('phonetic', '')}) — {q_data['meaning']}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"""
-                        <div class='error-box'>
-                            ❌ <b>CHƯA CHÍNH XÁC!</b><br>
-                            Đáp án đúng: <b>{q_data['target_word']}</b> ({w_item.get('phonetic', '')})<br>
-                            Nghĩa: {q_data['meaning']}<br>
-                            <i>Ví dụ: {q_data['sentence']}</i>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    # NEXT QUESTION BUTTON
-                    if st.button("NEXT QUESTION ➡️", type="primary"):
-                        st.session_state.current_index += 1
-                        st.session_state.answered = False
-                        
-                        # Generate Next Question Data if not at end
-                        if st.session_state.current_index < total_q:
-                            next_item = queue[st.session_state.current_index]
-                            st.session_state.current_q_data = generate_question_data(next_item, data["vocabulary"])
-                        st.rerun()
-
-    # ==========================================
-    # TAB 3: VOCABULARY NOTEBOOK & READING GENERATION
-    # ==========================================
-    with tab3:
-        st.header("Vocabulary Notebook & Adaptive Reading")
+    # 2. Logic bắt đầu Session mới
+    if not st.session_state.session_active:
+        st.subheader("🎯 Ready for a Quick 5–6 Words Review?")
+        st.caption("Mỗi session chỉ gồm 6 câu hỏi ngẫu nhiên. Nhanh chóng, tập trung và không gây ngợp!")
         
-        sub_tab_notebook, sub_tab_reading = st.tabs(["📚 Notebook List", "📖 Adaptive Reading Test"])
+        if st.button("🚀 START REVIEW SESSION", use_container_width=True, type="primary"):
+            vocab = st.session_state.data["vocabulary"]
+            now_str = datetime.now().isoformat()
+            
+            # Ưu tiên: 1. Due Wrong/New 2. Due Words 3. Sắp đến hạn
+            due_words = [w for w in vocab if w.get("next_review", "") <= now_str or w.get("status") == "new"]
+            
+            if not due_words:
+                # Fallback: Lấy các từ ít được review nhất
+                due_words = sorted(vocab, key=lambda x: x.get("next_review", ""))
+            
+            if not due_words:
+                st.info("🎉 Chưa có từ vựng nào trong danh sách. Hãy sang Tab 1 để Scan thêm từ nhé!")
+                return
+            
+            selected_words = random.sample(due_words, min(6, len(due_words)))
+            
+            st.session_state.current_queue = selected_words
+            st.session_state.current_q_index = 0
+            st.session_state.session_active = True
+            st.session_state.session_stats = {"correct": 0, "total": len(selected_words), "xp_gained": 0}
+            st.session_state.temp_correct = []
+            st.session_state.temp_wrong = []
+            st.session_state.combo = 0
+            st.session_state.answered = False
+            st.session_state.current_question = generate_question_for_word(
+                selected_words[0], st.session_state.data["vocabulary"]
+            )
+            st.rerun()
+        return
 
-        # SUB-TAB 1: NOTEBOOK LIST
-        with sub_tab_notebook:
-            col_s1, col_s2 = st.columns([2, 1])
-            search_query = col_s1.text_input("🔍 Tìm kiếm từ vựng:", "")
-            filter_status = col_s2.selectbox("Filter Status:", ["All", "new", "learning", "mastered"])
+    # 3. Trong khi đang trong Session
+    queue = st.session_state.current_queue
+    idx = st.session_state.current_q_index
 
-            filtered_vocab = data["vocabulary"]
-            if search_query:
-                filtered_vocab = [v for v in filtered_vocab if search_query.lower() in v["word"].lower() or search_query.lower() in v["meaning_vi"].lower()]
-            if filter_status != "All":
-                filtered_vocab = [v for v in filtered_vocab if v.get("status") == filter_status]
+    # --- SESSION COMPLETE SUMMARY ---
+    if idx >= len(queue):
+        st.balloons()
+        st.markdown("## 🎉 Session Complete!")
+        s_stats = st.session_state.session_stats
+        acc_session = int((s_stats['correct'] / s_stats['total']) * 100) if s_stats['total'] > 0 else 0
+        
+        st.success(f"""
+        **Kết quả lượt học:**
+        - 📚 **Words Reviewed:** {s_stats['total']}
+        - ✅ **Correct:** {s_stats['correct']}
+        - 🎯 **Accuracy:** {acc_session}%
+        - ⭐ **XP Gained:** +{s_stats['xp_gained']} XP
+        """)
+        
+        # Cập nhật Global Stats
+        stats["xp"] += s_stats["xp_gained"]
+        stats["total_reviews"] += s_stats["total"]
+        stats["correct_reviews"] += s_stats["correct"]
+        
+        # Update Daily Streak
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        last_date = stats.get("last_study_date")
+        if last_date != today_str:
+            if last_date == (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"):
+                stats["streak"] += 1
+            elif last_date is None:
+                stats["streak"] = 1
+            stats["last_study_date"] = today_str
 
-            st.write(f"Hiển thị {len(filtered_vocab)} từ vựng:")
+        save_data(st.session_state.data)
 
-            for v in filtered_vocab:
-                with st.expander(f"**{v['word']}** ({v.get('part_of_speech', 'n/a')}) — {v['meaning_vi']}"):
-                    c1, c2 = st.columns(2)
-                    c1.write(f"🔊 **IPA:** {v.get('phonetic', '/.../')}")
-                    c1.write(f"🏷️ **Topic:** {v.get('topic', 'General')}")
-                    c1.write(f"📈 **Difficulty:** {v.get('difficulty', 20)}/100")
-                    c2.write(f"🔄 **Reviews:** {v.get('review_count', 0)} (Đúng: {v.get('correct_count', 0)} | Sai: {v.get('wrong_count', 0)})")
-                    c2.write(f"⏳ **Next Review:** {v.get('next_review', 'N/A')}")
-                    c2.write(f"📌 **Status:** {v.get('status', 'new')}")
-                    st.caption(f"Ví dụ: {v.get('example', 'N/A')}")
+        if st.button("🔥 Continue Learning (Another 6 Words)", use_container_width=True):
+            st.session_state.session_active = False
+            st.rerun()
+        return
 
-        # SUB-TAB 2: READING GENERATION & TRANSLATION
-        with sub_tab_reading:
-            st.subheader("IELTS-Style Reading Challenge")
-            st.write("Tự động gom các từ trong cùng Topic để tạo bài đọc ngắn. Độ khó được căn chỉnh theo từ dễ nhất nhóm.")
+    # --- RENDER QUESTION GAME UI ---
+    q = st.session_state.current_question
+    curr_word_item = queue[idx]
 
-            selected_topic = st.selectbox("Chọn Topic để làm Reading:", ALL_TOPICS)
-            topic_words = [v for v in data["vocabulary"] if v.get("topic") == selected_topic]
+    # Progress bar & Combo
+    st.progress((idx) / len(queue))
+    st.caption(f"Question {idx + 1} of {len(queue)} | 🔥 Combo: x{st.session_state.combo}")
+    
+    st.markdown(f"### {q['type_title']}")
+    
+    # Form/Container cho Question
+    with st.container():
+        user_choice = None
+        
+        if q["type"] == 1 or q["type"] == 4:
+            st.markdown(f"**Context:** {q.get('context', '')}")
+            st.markdown(f"💡 **Hint:** `{q['hint']}`")
+            user_choice = st.text_input("Nhập đáp án tiếng Anh:", key=f"input_{idx}").strip()
+            
+        elif q["type"] == 2 or q["type"] == 5:
+            st.markdown(q["prompt_text"])
+            user_choice = st.radio("Chọn đáp án đúng:", q["options"], key=f"radio_{idx}")
+            
+        elif q["type"] == 3:
+            st.markdown(q["prompt_text"])
+            if st.button("🔊 Play Audio", key=f"audio_btn_{idx}"):
+                trigger_audio(q["word"])
+            user_choice = st.radio("Chọn từ bạn nghe được:", q["options"], key=f"radio_listen_{idx}")
 
-            if len(topic_words) < 3:
-                st.info(f"Cần ít nhất 3 từ thuộc Topic '{selected_topic}' để tạo bài đọc. Hiện có: {len(topic_words)} từ.")
+        # --- SUBMIT ANSWER LOGIC ---
+        if not st.session_state.answered:
+            if st.button("CHECK ANSWER 🚀", type="primary", use_container_width=True):
+                if not user_choice:
+                    st.warning("Vui lòng nhập/chọn đáp án!")
+                    return
+
+                st.session_state.answered = True
+                is_correct = (user_choice.lower() == q["correct_answer"].lower())
+                
+                # Auto Play Audio phát âm từ sau khi trả lời (Dù Đúng hay Sai)
+                trigger_audio(q["word"])
+                
+                # Cập nhật Spaced Repetition Data cho từ
+                updated_item = calculate_next_review(curr_word_item, is_correct)
+                
+                # Cập nhật vào global vocab data
+                for i, w in enumerate(st.session_state.data["vocabulary"]):
+                    if w["word"].lower() == updated_item["word"].lower():
+                        st.session_state.data["vocabulary"][i] = updated_item
+                        break
+
+                if is_correct:
+                    st.session_state.combo += 1
+                    earned_xp = 10 + (st.session_state.combo * 2)
+                    st.session_state.session_stats["correct"] += 1
+                    st.session_state.session_stats["xp_gained"] += earned_xp
+                    st.session_state.temp_correct.append(q["word"])
+                    st.session_state.last_result = ("correct", earned_xp)
+                else:
+                    st.session_state.combo = 0
+                    st.session_state.temp_wrong.append(q["word"])
+                    st.session_state.last_result = ("wrong", 0)
+
+                save_data(st.session_state.data)
+                st.rerun()
+
+        # --- FEEDBACK DISPLAY & NEXT BUTTON ---
+        else:
+            res_type, xp = st.session_state.last_result
+            if res_type == "correct":
+                st.success(f"✅ **CHÍNH XÁC!** (+{xp} XP) 🔊 Pronouncing '{q['word']}'...")
             else:
-                lowest_diff = min([v.get("difficulty", 20) for v in topic_words])
-                words_str = ", ".join([v["word"] for v in topic_words])
+                st.error(f"❌ **SAI RỒI!** Đáp án đúng là: **{q['correct_answer']}** 🔊 Pronouncing '{q['word']}'...")
+                st.info(f"💡 Nghĩa: {q['meaning']}")
 
-                if st.button("📖 GENERATE READING PASSAGE", type="primary"):
-                    with st.spinner("AI đang tạo bài đọc thích ứng..."):
-                        prompt = f"""
-                        Create a short reading passage (100-200 words) in English about topic '{selected_topic}'.
-                        Target Difficulty Level: {lowest_diff} (Keep it simple if difficulty is low).
-                        Must naturally incorporate some of these vocabulary words: {words_str}.
-                        
-                        Return JSON:
+            if st.button("NEXT QUESTION ➡️", use_container_width=True, type="primary"):
+                st.session_state.answered = False
+                st.session_state.current_q_index += 1
+                if st.session_state.current_q_index < len(queue):
+                    next_word = queue[st.session_state.current_q_index]
+                    st.session_state.current_question = generate_question_for_word(
+                        next_word, st.session_state.data["vocabulary"]
+                    )
+                st.rerun()
+
+# --- TAB 3: VOCABULARY NOTEBOOK & READING GENERATOR ---
+def render_tab_notebook():
+    st.markdown("### 📚 Vocabulary Notebook & AI Reading")
+    vocab = st.session_state.data["vocabulary"]
+
+    if not vocab:
+        st.info("Sổ tay từ vựng trống. Hãy dùng Tab 1 để Scan thêm từ mới!")
+        return
+
+    # Sub-tabs cho Notebook
+    nt_tab1, nt_tab2 = st.tabs(["📖 Word List", "📰 AI Topic Reading"])
+
+    # 1. WORD LIST VIEW
+    with nt_tab1:
+        col_s, col_f1, col_f2 = st.columns([2, 1, 1])
+        search_q = col_s.text_input("🔍 Tìm kiếm từ...", "")
+        topic_filter = col_f1.selectbox("Filter Topic:", ["All"] + TOPICS)
+        status_filter = col_f2.selectbox("Filter Status:", ["All", "new", "learning", "mastered"])
+
+        # Lọc danh sách
+        filtered_vocab = vocab
+        if search_q:
+            filtered_vocab = [w for w in filtered_vocab if search_q.lower() in w["word"].lower() or search_q.lower() in w["meaning_vi"].lower()]
+        if topic_filter != "All":
+            filtered_vocab = [w for w in filtered_vocab if w.get("topic") == topic_filter]
+        if status_filter != "All":
+            filtered_vocab = [w for w in filtered_vocab if w.get("status") == status_filter]
+
+        st.caption(f"Hiển thị {len(filtered_vocab)} / {len(vocab)} từ")
+
+        for w in filtered_vocab:
+            with st.expander(f"**{w['word']}** {w.get('phonetic', '')} — *{w.get('meaning_vi', '')}*"):
+                c1, c2 = st.columns(2)
+                c1.write(f"**Part of Speech:** {w.get('part_of_speech', 'N/A')}")
+                c1.write(f"**Topic:** {w.get('topic', 'General')}")
+                c1.write(f"**Difficulty:** {w.get('difficulty', 20)}/100")
+                
+                c2.write(f"**Status:** `{w.get('status', 'new')}`")
+                c2.write(f"**Reviews:** {w.get('review_count', 0)} (Correct: {w.get('correct_count', 0)})")
+                c2.write(f"**Next Review:** {w.get('next_review', 'Now')[:16].replace('T', ' ')}")
+                
+                if w.get("example"):
+                    st.caption(f"💬 Example: *{w['example']}*")
+                
+                if st.button(f"🔊 Listen '{w['word']}'", key=f"nb_sound_{w['id']}"):
+                    trigger_audio(w['word'])
+
+    # 2. READING GENERATION VIEW
+    with nt_tab2:
+        st.markdown("#### 📰 AI Adaptive Reading Practice")
+        st.caption("Tự động tạo đoạn văn ngắn tích hợp từ vựng đã học theo Topic khi đạt đủ 5+ từ!")
+        
+        selected_topic = st.selectbox("Chọn Topic để đọc:", TOPICS)
+        topic_words = [w for w in vocab if w.get("topic") == selected_topic]
+        
+        st.write(f"Số từ đã học trong topic **{selected_topic}**: {len(topic_words)} từ.")
+
+        if len(topic_words) < 3:
+            st.warning("⚠️ Bạn cần có ít nhất 3 từ vựng trong Topic này để tạo bài đọc IELTS phù hợp!")
+        else:
+            if st.button("✨ Generate AI Reading Passage", type="primary"):
+                with st.spinner("🤖 AI đang biên soạn bài đọc adaptive..."):
+                    # ALGORITHM: Lấy difficulty thấp nhất làm difficulty bài đọc
+                    min_diff = min([w.get("difficulty", 20) for w in topic_words])
+                    word_list_str = ", ".join([w["word"] for w in topic_words])
+                    
+                    prompt = f"""
+                    Create a short reading passage (100-180 words) in English about topic '{selected_topic}'.
+                    Target vocabulary to include naturally: {word_list_str}.
+                    Reading difficulty level (0-100): {min_diff} (Keep sentences easy to digest if low).
+                    Return JSON:
+                    {{
+                        "title": "Passage Title",
+                        "content": "Full English passage text...",
+                        "target_words_used": ["word1", "word2"]
+                    }}
+                    """
+                    reading_res = call_openrouter([{"role": "user", "content": prompt}])
+                    if reading_res and "content" in reading_res:
+                        st.session_state.current_reading = reading_res
+                    else:
+                        st.error("Không thể tạo bài đọc lúc này.")
+
+        # Hiển thị bài đọc và phần dịch
+        if "current_reading" in st.session_state:
+            rd = st.session_state.current_reading
+            st.markdown(f"### 📖 {rd.get('title', 'Reading Practice')}")
+            st.info(rd["content"])
+            
+            st.markdown("#### ✍️ Translation Challenge")
+            user_translation = st.text_area("Hãy dịch đoạn văn trên sang tiếng Việt:")
+            
+            if st.button("CHẤM BẢN DỊCH 📝"):
+                if not user_translation.strip():
+                    st.warning("Vui lòng nhập bản dịch của bạn!")
+                else:
+                    with st.spinner("🤖 AI đang đánh giá bản dịch..."):
+                        grade_prompt = f"""
+                        Original English: "{rd['content']}"
+                        User Vietnamese Translation: "{user_translation}"
+
+                        Evaluate semantic accuracy and comprehension.
+                        Return JSON format:
                         {{
-                            "title": "Title of passage",
-                            "passage": "Full English passage text...",
-                            "vocab_used": ["word1", "word2"]
+                            "semantic_accuracy": 88,
+                            "comprehension": 90,
+                            "feedback": "Nhận xét ngắn gọn ưu/nhược điểm bản dịch..."
                         }}
                         """
-                        res = call_openrouter(prompt)
-                        if res and "passage" in res:
-                            st.session_state.current_reading = res
-                        else:
-                            st.error("Không thể tạo bài đọc lúc này. Vui lòng thử lại!")
+                        g_res = call_openrouter([{"role": "user", "content": grade_prompt}])
+                        if g_res:
+                            st.markdown("##### 🎯 Kết quả đánh giá AI:")
+                            st.write(f"📊 **Semantic Accuracy:** {g_res.get('semantic_accuracy', 0)}%")
+                            st.write(f"🧠 **Comprehension:** {g_res.get('comprehension', 0)}%")
+                            st.success(f"💬 **Feedback:** {g_res.get('feedback', '')}")
 
-                if "current_reading" in st.session_state:
-                    rd = st.session_state.current_reading
-                    st.markdown(f"### {rd.get('title', 'Reading Passage')}")
-                    st.info(rd.get("passage"))
-                    st.caption(f"Từ vựng sử dụng: {', '.join(rd.get('vocab_used', []))}")
+# ==============================================================================
+# 6. MAIN APP ENTRY POINT
+# ==============================================================================
+def main():
+    st.set_page_config(
+        page_title="VocabBuilder AI",
+        page_icon="⚡",
+        layout="wide",
+        initial_sidebar_state="collapsed"
+    )
 
-                    user_trans = st.text_area("Nhập bản dịch tiếng Việt của bạn:", height=120)
-                    if st.button("CHẤM BẢN DỊCH", type="primary"):
-                        if not user_trans.strip():
-                            st.warning("Vui lòng nhập bản dịch!")
-                        else:
-                            with st.spinner("AI đang đánh giá bản dịch..."):
-                                grade_prompt = f"""
-                                Grade this Vietnamese translation of the English passage.
-                                English: "{rd.get('passage')}"
-                                User Translation: "{user_trans}"
-                                
-                                Return JSON:
-                                {{
-                                    "semantic_accuracy": 85,
-                                    "comprehension": 90,
-                                    "feedback": "Short constructive feedback in Vietnamese..."
-                                }}
-                                """
-                                g_res = call_openrouter(grade_prompt)
-                                if g_res:
-                                    st.success(f"🎯 Accuracy: {g_res.get('semantic_accuracy', 0)}% | Comprehension: {g_res.get('comprehension', 0)}%")
-                                    st.write(f"**Feedback AI:** {g_res.get('feedback', '')}")
-                                else:
-                                    st.error("Lỗi khi chấm bài dịch.")
+    init_session_state()
+
+    st.title("⚡ Spaced Repetition Vocab Game")
+    st.caption("Học từ vựng siêu tốc • Micro-sessions • AI Adaptive")
+
+    tab1, tab2, tab3 = st.tabs([
+        "🔍 TAB 1: SCAN / ADD WORDS",
+        "🎮 TAB 2: REVIEW SESSION",
+        "📚 TAB 3: VOCAB NOTEBOOK"
+    ])
+
+    with tab1:
+        render_tab_scan()
+    with tab2:
+        render_tab_review()
+    with tab3:
+        render_tab_notebook()
 
 if __name__ == "__main__":
     main()
