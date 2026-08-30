@@ -8,6 +8,7 @@ import re
 import io
 import base64
 import time
+import streamlit.components.v1 as components
 from gtts import gTTS
 
 # ==========================================
@@ -429,14 +430,14 @@ def render_review_tab():
                 total_seconds = int(diff.total_seconds())
                 
                 if total_seconds > 0:
-                    # Hiển thị đồng hồ đếm ngược bằng Javascript
-                    st.markdown(f"""
-                        <div style="text-align: center; padding: 20px; background-color: #262730; border-radius: 10px; margin-top: 20px;">
-                            <h4 style="margin:0; color: #fafafa;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
-                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;"></div>
+                    # Dùng components.html thay cho st.markdown để Javascript có thể chạy được
+                    components.html(f"""
+                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444;">
+                            <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
+                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;">Đang tính toán...</div>
                         </div>
                         <script>
-                            // Lấy thời gian hiện tại của trình duyệt + số giây chờ
+                            // Lấy thời gian hiện tại + số giây chờ
                             var countDownDate = new Date().getTime() + ({total_seconds} * 1000);
                             
                             var x = setInterval(function() {{
@@ -455,7 +456,7 @@ def render_review_tab():
                                 }}
                             }}, 1000);
                         </script>
-                    """, unsafe_allow_html=True)
+                    """, height=150)
             else:
                 st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
             return
