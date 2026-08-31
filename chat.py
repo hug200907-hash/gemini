@@ -667,7 +667,6 @@ def render_review_tab():
         # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
             import base64
-            import streamlit.components.v1 as components
             
             # File Tiếng Anh
             fp_en = io.BytesIO()
@@ -679,28 +678,35 @@ def render_review_tab():
             gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
             b64_vi = base64.b64encode(fp_vi.getvalue()).decode()
             
-            # Dùng components.html và JS thuần để ép trình duyệt phát âm thanh tuần tự
-            audio_script = f"""
-            <script>
-                // Khởi tạo 2 luồng âm thanh
-                var audioEn = new Audio('data:audio/mp3;base64,{b64_en}');
-                var audioVi = new Audio('data:audio/mp3;base64,{b64_vi}');
-                
-                // Phát tiếng Anh
-                audioEn.play().catch(function(err) {{
-                    console.log("Trình duyệt chặn Autoplay: ", err);
-                }});
-                
-                // Bắt sự kiện tiếng Anh kết thúc -> đợi 0.5s -> Phát tiếng Việt
-                audioEn.onended = function() {{
-                    setTimeout(function() {{
-                        audioVi.play();
-                    }}, 500);
-                }};
-            </script>
+            # Đóng gói mã JS vào trong một cấu trúc HTML chuẩn
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <body>
+                <script>
+                    var audioEn = new Audio('data:audio/mp3;base64,{b64_en}');
+                    var audioVi = new Audio('data:audio/mp3;base64,{b64_vi}');
+                    
+                    audioEn.play().catch(function(err) {{
+                        console.log("Autoplay blocked: ", err);
+                    }});
+                    
+                    audioEn.onended = function() {{
+                        setTimeout(function() {{
+                            audioVi.play();
+                        }}, 500);
+                    }};
+                </script>
+            </body>
+            </html>
             """
-            # Chạy script ngầm (không hiển thị giao diện)
-            components.html(audio_script, height=0, width=0)
+            
+            # Mã hóa toàn bộ chuỗi HTML sang Base64 để tạo Data URL
+            b64_html = base64.b64encode(html_content.encode('utf-8')).decode('utf-8')
+            data_url = f"data:text/html;base64,{b64_html}"
+            
+            # Thay thế st.components.v1.html bằng st.iframe theo đúng chuẩn mới
+            st.iframe(data_url, height=0)
             
         except Exception as e:
             pass
