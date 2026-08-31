@@ -364,15 +364,23 @@ def generate_question(word_data):
     
     if chosen_type == 'fill_blank' or chosen_type == 'spelling':
         diff = word_data['difficulty']
+        # Ép AI giấu từ gắt gao hơn
         prompt = f"""
-        Generate a fill-in-the-blank English sentence for the word '{word_data['word']}'. 
-        The difficulty is {diff}/100. If it's low, make the sentence extremely simple.
-        Replace the target word with '___'.
-        Output JSON:
-        {{"context": "The sentence with ___"}}
+        Generate a short, clear English sentence to test the word '{word_data['word']}'.
+        The difficulty of the sentence should be {diff}/100.
+        You MUST hide the target word '{word_data['word']}' by replacing it EXACTLY with '___' (three underscores).
+        Output strictly in JSON format:
+        {{"context": "The sentence with ___ instead of the word."}}
         """
         res = call_ai(prompt)
         context = res.get('context', f"I need to use the word ___.") if res else f"Context for ___."
+        
+        # --- BẢO HIỂM 100%: Dùng Regex ẩn từ khóa phòng trường hợp AI quên ---
+        target_word = word_data['word']
+        # Dùng re.sub với cờ re.IGNORECASE để xóa luôn từ khóa (dù nó viết hoa đầu câu hay viết thường)
+        context = re.sub(re.escape(target_word), "___", context, flags=re.IGNORECASE)
+        # ---------------------------------------------------------------------
+        
         question['context'] = context
         question['hint'] = generate_hint(word_data['word'], diff)
         
