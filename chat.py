@@ -1,895 +1,904 @@
 import streamlit as st
 import sqlite3
 import json
-import requests
 import random
-import datetime
 import re
-import io
-import base64
-import time
-import difflib
-import streamlit.components.v1 as components
-from gtts import gTTS
+import requests
+from datetime import datetime, timedelta
+import math
 
-# ==========================================
-# 0. CONFIG & CONSTANTS
-# ==========================================
-DB_FILE = "vocab_quest.db"
+# ==============================================================================
+# CONFIG & CONSTANTS
+# ==============================================================================
+DB_FILE = "vocab.db"
 DEFAULT_MODEL = "minimax/minimax-m3:free"
-SESSION_LIMIT = 6 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-st.set_page_config(page_title="Vocab Quest", page_icon="🧠", layout="centered")
+st.set_page_config(
+    page_title="Vocab Conquest - Game-based SRS",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# Lấy API Key an toàn
-try:
-    API_KEY = st.secrets["OPENROUTER_API_KEY"]
-except KeyError:
-    API_KEY = None
+# Custom CSS cho Dark Mode UI & Gamification
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #121214;
+        color: #e1e1e6;
+    }
+    .main-card {
+        background-color: #202024;
+        border-radius: 12px;
+        padding: 24px;
+        border: 1px solid #323238;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        margin-bottom: 20px;
+    }
+    .stat-badge {
+        background: linear-gradient(135deg, #2b2b36 0%, #1e1e24 100%);
+        border: 1px solid #4d4d57;
+        padding: 12px;
+        border-radius: 10px;
+        text-align: center;
+    }
+    .xp-bar {
+        background-color: #29292e;
+        border-radius: 8px;
+        height: 12px;
+        width: 100%;
+        overflow: hidden;
+    }
+    .xp-fill {
+        background: linear-gradient(90deg, #00b4d8 0%, #7209b7 100%);
+        height: 100%;
+        transition: width 0.3s ease;
+    }
+    .correct-box {
+        background-color: #1b382b;
+        border: 1px solid #2ecc71;
+        padding: 16px;
+        border-radius: 8px;
+        margin-top: 10px;
+    }
+    .wrong-box {
+        background-color: #3d1e24;
+        border: 1px solid #e74c3c;
+        padding: 16px;
+        border-radius: 8px;
+        margin-top: 10px;
+    }
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# ==========================================
-# 1. DATABASE SETUP
-# ==========================================
-def get_db():
+# ==============================================================================
+# DATABASE LAYER
+# ==============================================================================
+def get_db_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    conn = get_db()
-    c = conn.cursor()
-    # Bảng Words
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS words (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            word TEXT UNIQUE,
-            normalized_word TEXT UNIQUE,
-            meaning_vi TEXT,
-            meaning_en TEXT,
-            part_of_speech TEXT,
-            pronunciation TEXT,
-            ipa TEXT,
-            topic TEXT,
-            example_sentence TEXT,
-            difficulty INTEGER DEFAULT 15,
-            first_seen TIMESTAMP,
-            last_review TIMESTAMP,
-            next_review TIMESTAMP,
-            review_count INTEGER DEFAULT 0,
-            correct_count INTEGER DEFAULT 0,
-            wrong_count INTEGER DEFAULT 0,
-            streak INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'new'
-        )
-    ''')
-    # Bảng User Stats
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            xp INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 1,
-            daily_streak INTEGER DEFAULT 0,
-            last_active TIMESTAMP
-        )
-    ''')
-    # Bảng Readings
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS readings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            topic TEXT,
-            words_used TEXT,
-            difficulty INTEGER,
-            content TEXT,
-            created_at TIMESTAMP,
-            last_review TIMESTAMP,
-            next_review TIMESTAMP,
-            review_count INTEGER DEFAULT 0
-        )
-    ''')
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    c.execute("INSERT OR IGNORE INTO user_stats (username, xp, level) VALUES ('default_user', 0, 1)")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS words (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        word TEXT UNIQUE NOT NULL,
+        normalized_word TEXT NOT NULL,
+        vietnamese_meaning TEXT,
+        english_definition TEXT,
+        example_sentence TEXT,
+        pronunciation TEXT,
+        phonetic TEXT,
+        topic TEXT DEFAULT 'General',
+        difficulty INTEGER DEFAULT 20,
+        first_learned_at DATETIME,
+        last_review_at DATETIME,
+        next_review_at DATETIME,
+        correct_count INTEGER DEFAULT 0,
+        wrong_count INTEGER DEFAULT 0,
+        total_reviews INTEGER DEFAULT 0,
+        last_question_type TEXT,
+        current_streak INTEGER DEFAULT 0,
+        learning_state TEXT DEFAULT 'NEW'
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        word_id INTEGER,
+        question_type TEXT,
+        user_answer TEXT,
+        is_correct INTEGER,
+        difficulty_before INTEGER,
+        difficulty_after INTEGER,
+        reviewed_at DATETIME
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS reading_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic TEXT,
+        passage TEXT,
+        user_translation TEXT,
+        accuracy INTEGER,
+        comprehension INTEGER,
+        feedback TEXT,
+        reviewed_at DATETIME,
+        next_review_at DATETIME
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        word_id INTEGER,
+        question_type TEXT,
+        reason TEXT,
+        details TEXT,
+        created_at DATETIME
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_stats (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        xp INTEGER DEFAULT 0,
+        streak INTEGER DEFAULT 0,
+        last_activity_date TEXT,
+        level INTEGER DEFAULT 1
+    )
+    """)
+    
+    cursor.execute("INSERT OR IGNORE INTO user_stats (id, xp, streak, level) VALUES (1, 0, 0, 1)")
     conn.commit()
     conn.close()
 
-# ==========================================
-# 2. AI WRAPPER
-# ==========================================
-def call_ai(prompt, system_prompt="You are a helpful AI assistant. Output strictly in JSON format.", retries=2):
-    if not API_KEY:
-        st.error("Missing OPENROUTER_API_KEY in st.secrets.")
-        return None
-        
-    url = "https://openrouter.ai/api/v1/chat/completions"
+init_db()
+
+# ==============================================================================
+# OPENROUTER AI LAYER
+# ==============================================================================
+def call_ai(prompt: str, system_prompt: str = "You are a helpful AI language expert.", json_mode: bool = True) -> dict | str:
+    api_key = st.secrets.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        st.error("⚠️ Chưa tìm thấy OPENROUTER_API_KEY trong Streamlit Secrets!")
+        return {} if json_mode else "Lỗi API Key"
+
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://streamlit.io",
+        "X-Title": "VocabConquest"
     }
+
     payload = {
         "model": DEFAULT_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "response_format": {"type": "json_object"}
+        "temperature": 0.3
     }
     
-    for attempt in range(retries + 1):
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=20)
-            if resp.status_code == 200:
-                text = resp.json()["choices"][0]["message"]["content"]
-                match = re.search(r'\[.*\]|\{.*\}', text, re.DOTALL)
-                if match:
-                    return json.loads(match.group(0))
-                return json.loads(text)
-            elif resp.status_code == 429:
-                time.sleep(2)
-        except Exception as e:
-            if attempt == retries:
-                st.error(f"AI Call Error: {str(e)}")
-                return None
-            time.sleep(1)
-    return None
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
-# ==========================================
-# 3. HELPER FUNCTIONS
-# ==========================================
-def normalize_word(word):
+    for attempt in range(2):
+        try:
+            res = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=25)
+            if res.status_code == 200:
+                content = res.json()["choices"][0]["message"]["content"].strip()
+                if json_mode:
+                    # Clean potential markdown wrapping
+                    if content.startswith("```json"):
+                        content = re.sub(r"^```json\s*", "", content)
+                        content = re.sub(r"\s*```$", "", content)
+                    return json.loads(content)
+                return content
+        except Exception as e:
+            if attempt == 1:
+                st.warning(f"AI Connection error: {str(e)}")
+    
+    return {} if json_mode else "AI Service Unreachable"
+
+# ==============================================================================
+# ALGORITHMS: HINT, SRS, GAMIFICATION
+# ==============================================================================
+def generate_smart_hint(word: str, difficulty: int) -> str:
+    """Reveals vowels first, then consonants near long vowels, scaled by difficulty (0-100)."""
+    n = len(word)
+    if n <= 2:
+        return "_ " * n
+    
+    # Reveal percentage: low difficulty = more visible letters (up to 70%), high = less (min 20%)
+    reveal_pct = max(0.2, min(0.7, 1.0 - (difficulty / 100.0)))
+    reveal_count = max(1, math.ceil(n * reveal_pct))
+    
+    vowels = set("aeiouAEIOU")
+    indices = list(range(n))
+    
+    # Priority score: Vowels get priority 2, adjacent to vowels get 1, rest 0
+    scores = []
+    for idx in indices:
+        char = word[idx]
+        if char.lower() in vowels:
+            scores.append((2, idx))
+        elif (idx > 0 and word[idx-1].lower() in vowels) or (idx < n-1 and word[idx+1].lower() in vowels):
+            scores.append((1, idx))
+        else:
+            scores.append((0, idx))
+            
+    # Sort indices by score descending
+    scores.sort(key=lambda x: x[0], reverse=True)
+    revealed_indices = set(x[1] for x in scores[:reveal_count])
+    
+    hint_chars = []
+    for i, char in enumerate(word):
+        if i in revealed_indices or not char.isalpha():
+            hint_chars.append(char)
+        else:
+            hint_chars.append("_")
+            
+    return " ".join(hint_chars)
+
+def update_word_srs(word_id: int, is_correct: bool):
+    """Custom fast-paced Short-Term Spaced Repetition (Intervals ~1/10th of traditional Anki)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM words WHERE id = ?", (word_id,))
+    word = cursor.fetchone()
     if not word:
-        return ""
-    return re.sub(r'[^\w\s]', '', word.strip().lower())
-
-def get_diff_html(user_ans, correct_ans):
-    user_ans = str(user_ans).strip() if user_ans else ""
-    correct_ans = str(correct_ans).strip()
-    
-    if not user_ans:
-        return f"<span style='color: #2e7d32; font-weight: bold;'>{correct_ans}</span> (Bạn chưa nhập gì)"
-        
-    matcher = difflib.SequenceMatcher(None, user_ans.lower(), correct_ans.lower())
-    result = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal':
-            # Ký tự đúng: Màu xanh lá
-            result.append(f"<span style='color: #2e7d32; font-weight: bold;'>{correct_ans[j1:j2]}</span>")
-        elif tag == 'replace':
-            # Nhập sai ký tự: Gạch ngang đỏ + Hiển thị lại chữ đúng màu xanh
-            result.append(f"<span style='color: #d32f2f; text-decoration: line-through;'>{user_ans[i1:i2]}</span><span style='color: #2e7d32; font-weight: bold;'>{correct_ans[j1:j2]}</span>")
-        elif tag == 'delete':
-            # Nhập dư ký tự: Gạch ngang đỏ
-            result.append(f"<span style='color: #d32f2f; text-decoration: line-through;'>{user_ans[i1:i2]}</span>")
-        elif tag == 'insert':
-            # Nhập thiếu ký tự: Bổ sung chữ màu xanh có gạch chân
-            result.append(f"<span style='color: #2e7d32; font-weight: bold; text-decoration: underline;'>{correct_ans[j1:j2]}</span>")
-    return "".join(result)
-
-def play_audio(word_text, autoplay=True):
-    try:
-        tts = gTTS(text=word_text, lang='en')
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        b64 = base64.b64encode(fp.read()).decode()
-        if autoplay:
-            md = f'<audio autoplay="true"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
-            st.markdown(md, unsafe_allow_html=True)
-        return b64
-    except Exception:
-        pass
-    return None
-
-def generate_hint(word, difficulty):
-    word = word.strip()
-    ratio = max(0.2, 1.0 - (difficulty / 100.0) * 0.8)
-    num_reveal = max(1, int(len(word) * ratio))
-    
-    chars = list(word)
-    vowels = set('aeiouyAEIOUY')
-    revealed_idx = set()
-    
-    for i, c in enumerate(chars):
-        if c in vowels and len(revealed_idx) < num_reveal:
-            revealed_idx.add(i)
-            
-    if len(revealed_idx) < num_reveal:
-        unrevealed = [i for i in range(len(chars)) if i not in revealed_idx and chars[i].isalpha()]
-        random.seed(word) 
-        random.shuffle(unrevealed)
-        for i in unrevealed:
-            if len(revealed_idx) < num_reveal:
-                revealed_idx.add(i)
-                
-    res = []
-    for i, c in enumerate(chars):
-        if not c.isalpha():
-            res.append(c)
-        elif i in revealed_idx:
-            res.append(c)
-        else:
-            res.append('_')
-    return " ".join(res)
-
-def calculate_next_review(word_data, is_correct):
-    now = datetime.datetime.now()
-    streak = word_data['streak']
-    intervals_mins = [15, 60, 240, 720, 1440, 2880, 4320]
-    
-    if is_correct:
-        new_streak = streak + 1
-        idx = min(new_streak, len(intervals_mins) - 1)
-        interval = intervals_mins[idx]
-        new_diff = max(0, word_data['difficulty'] + random.randint(8, 15))
-    else:
-        new_streak = 0
-        interval = random.randint(5, 30)
-        new_diff = min(100, max(0, word_data['difficulty'] - random.randint(10, 20)))
-        
-    next_review = now + datetime.timedelta(minutes=interval)
-    return next_review.strftime("%Y-%m-%d %H:%M:%S"), new_streak, new_diff
-
-def award_xp(amount):
-    conn = get_db()
-    conn.execute("UPDATE user_stats SET xp = xp + ? WHERE username = 'default_user'", (amount,))
-    conn.commit()
-    conn.close()
-    st.session_state.session_xp += amount
-
-def get_user_stats():
-    conn = get_db()
-    row = conn.execute("SELECT * FROM user_stats WHERE username = 'default_user'").fetchone()
-    conn.close()
-    return row
-
-def select_review_words(limit=SESSION_LIMIT):
-    conn = get_db()
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    failed_due = conn.execute(
-        "SELECT * FROM words WHERE wrong_count > correct_count AND next_review <= ? ORDER BY next_review ASC", (now_str,)
-    ).fetchall()
-    
-    new_words = conn.execute(
-        "SELECT * FROM words WHERE status = 'new' ORDER BY id ASC"
-    ).fetchall()
-    
-    review_due = conn.execute(
-        "SELECT * FROM words WHERE status != 'new' AND next_review <= ? ORDER BY next_review ASC", (now_str,)
-    ).fetchall()
-    
-    conn.close()
-    
-    results = []
-    for lst in [failed_due, new_words, review_due]:
-        random.shuffle(lst)
-        for row in lst:
-            if len(results) >= limit:
-                break
-            if not any(r['id'] == row['id'] for r in results):
-                results.append(dict(row))
-        if len(results) >= limit:
-            break
-            
-    return results
-
-# ==========================================
-# 4. TAB 1: SCAN TEXT
-# ==========================================
-def render_scan_tab():
-    st.header("📥 Scan & Extract Words")
-    st.write("Paste an English text below. The AI will extract useful vocabulary.")
-    
-    text = st.text_area("Source Text", height=200, placeholder="Paste English text here...")
-    if st.button("SCAN & CREATE WORDS", type="primary"):
-        if not text.strip():
-            st.warning("Please enter some text.")
-            return
-            
-        with st.spinner("AI is analyzing the text..."):
-            prompt = f"""
-            Extract useful vocabulary/collocations from the following text to learn. 
-            Ignore proper nouns and extremely basic words. 
-            Return a JSON array of objects.
-            Format for each object:
-            {{
-                "word": "...",
-                "meaning_vi": "Vietnamese meaning based on the context",
-                "meaning_en": "English definition",
-                "part_of_speech": "noun/verb/adj...",
-                "ipa": "IPA pronunciation",
-                "topic": "Determine one main topic (e.g. Technology, Daily Life)",
-                "example_sentence": "A very simple example sentence. Do NOT copy the text.",
-                "difficulty": integer from 0 to 100 (0=extremely easy, 100=very hard)
-            }}
-            
-            TEXT:
-            "{text}"
-            """
-            sys_prompt = "You are a vocabulary extractor. Output JSON array ONLY."
-            results = call_ai(prompt, sys_prompt)
-            
-            if not results or not isinstance(results, list):
-                st.error("Failed to extract words or invalid format received.")
-                return
-                
-            conn = get_db()
-            added = 0
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            for item in results:
-                try:
-                    norm = normalize_word(item['word'])
-                    exist = conn.execute("SELECT id FROM words WHERE normalized_word = ?", (norm,)).fetchone()
-                    if not exist:
-                        conn.execute('''
-                            INSERT INTO words (word, normalized_word, meaning_vi, meaning_en, part_of_speech, 
-                                             ipa, topic, example_sentence, difficulty, first_seen, status)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
-                        ''', (
-                            item['word'], norm, item['meaning_vi'], item['meaning_en'], 
-                            item['part_of_speech'], item.get('ipa',''), item.get('topic','General'), 
-                            item['example_sentence'], min(100, max(0, item.get('difficulty', 15))), now
-                        ))
-                        added += 1
-                except Exception:
-                    pass
-                    
-            conn.commit()
-            conn.close()
-            
-            if added > 0:
-                st.success(f"🎉 Found and added {added} new words!")
-                st.balloons()
-            else:
-                st.info("No new words found (they might be too basic or already exist).")
-
-# ==========================================
-# 5. TAB 2: REVIEW SYSTEM
-# ==========================================
-def generate_question(word_data, force_easy=False, specific_type=None):
-    q_types = ['fill_blank', 'vi_to_en', 'listening_mcq', 'spelling', 'ipa_mcq']
-    # Nếu đang hạ độ khó, giữ nguyên dạng bài cũ, nếu không thì chọn ngẫu nhiên
-    chosen_type = specific_type if specific_type else random.choice(q_types)
-    
-    conn = get_db()
-    distractors_raw = conn.execute("SELECT word, meaning_vi, ipa FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3", (word_data['id'],)).fetchall()
-    conn.close()
-    
-    distractors = [dict(d) for d in distractors_raw]
-    
-    question = {
-        'type': chosen_type,
-        'word': word_data['word'],
-        'correct_answer': word_data['word']
-    }
-    
-    if chosen_type == 'fill_blank' or chosen_type == 'spelling':
-        # Ép độ khó về 5 (cực dễ) nếu người dùng bấm nút "Khó hiểu"
-        diff = 5 if force_easy else word_data['difficulty']
-        level_prompt = "A1 beginner level, use extremely simple and common words" if force_easy else f"difficulty {diff}/100"
-        
-        prompt = f"""
-        Generate a short, clear English sentence to test the word '{word_data['word']}'.
-        The sentence should be at: {level_prompt}.
-        You MUST hide the target word '{word_data['word']}' by replacing it EXACTLY with '___' (three underscores).
-        Output strictly in JSON format:
-        {{"context": "The sentence with ___ instead of the word."}}
-        """
-        res = call_ai(prompt)
-        context = res.get('context', f"I need to use the word ___.") if res else f"Context for ___."
-        
-        target_word = word_data['word']
-        context = re.sub(re.escape(target_word), "___", context, flags=re.IGNORECASE)
-        
-        question['context'] = context
-        question['hint'] = generate_hint(word_data['word'], diff)
-        
-    elif chosen_type == 'vi_to_en':
-        options = [word_data['word']] + [d['word'] for d in distractors]
-        random.shuffle(options)
-        question['meaning_vi'] = word_data['meaning_vi']
-        question['options'] = options
-        
-    elif chosen_type == 'listening_mcq':
-        options = [word_data['word']] + [d['word'] for d in distractors]
-        random.shuffle(options)
-        question['meaning_vi'] = word_data['meaning_vi']
-        question['options'] = options
-        
-    elif chosen_type == 'ipa_mcq':
-        options = [word_data['ipa']] + [d['ipa'] for d in distractors if d['ipa']]
-        while len(options) < 4: options.append(f"/{word_data['word'][:3]}.../")
-        options = list(set(options))[:4]
-        random.shuffle(options)
-        question['meaning_vi'] = word_data['meaning_vi']
-        question['options'] = options
-        question['correct_answer'] = word_data['ipa']
-
-    return question
-
-def render_review_tab():
-    st.header("⚔️ Review Session")
-    stats = get_user_stats()
-    st.markdown(f"**🔥 STREAK: {stats['daily_streak']} &nbsp;&nbsp;|&nbsp;&nbsp; XP: {stats['xp']} &nbsp;&nbsp;|&nbsp;&nbsp; LEVEL: {stats['level']}**")
-    st.divider()
-
-    if 'review_session' not in st.session_state:
-        st.session_state.review_session = None
-
-    if st.session_state.review_session is None:
-        words = select_review_words()
-        if not words:
-            st.success("🎉 You're all caught up! No words to review right now.")
-            
-            conn = get_db()
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            next_word = conn.execute(
-                "SELECT next_review FROM words WHERE next_review > ? AND status != 'new' ORDER BY next_review ASC LIMIT 1", 
-                (now_str,)
-            ).fetchone()
-            conn.close()
-
-            if next_word and next_word['next_review']:
-                next_time_str = next_word['next_review']
-                next_time = datetime.datetime.strptime(next_time_str, "%Y-%m-%d %H:%M:%S")
-                now = datetime.datetime.now()
-                diff = next_time - now
-                total_seconds = int(diff.total_seconds())
-                
-                if total_seconds > 0:
-                    st.markdown(f"""
-                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444; margin-bottom: 20px;">
-                            <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
-                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;">Đang tính toán...</div>
-                        </div>
-                        <script>
-                            var countDownDate = new Date().getTime() + ({total_seconds} * 1000);
-                            var x = setInterval(function() {{
-                                var now = new Date().getTime();
-                                var distance = countDownDate - now;
-                                var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                                var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                                var seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                                var el = document.getElementById("next_review_countdown");
-                                if(el) {{
-                                    el.innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
-                                }}
-                                if (distance < 0) {{
-                                    clearInterval(x);
-                                    if(el) el.innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
-                                }}
-                            }}, 1000);
-                        </script>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
-            return
-            
-        if st.button("🚀 Start Review Session", type="primary"):
-            st.session_state.review_session = {
-                'words': words,
-                'current_idx': 0,
-                'correct': 0,
-                'answered': False,
-                'session_xp': 0,
-                'current_q': None,
-                'force_easy': False,
-                'specific_type': None
-            }
-            st.session_state.session_combo = 0
-            st.rerun()
-        return
-
-    session = st.session_state.review_session
-    idx = session['current_idx']
-    
-    if idx >= len(session['words']):
-        st.success(f"🎉 SESSION COMPLETE!")
-        st.write(f"Correct: {session['correct']} / {len(session['words'])}")
-        st.write(f"XP Earned: +{session['session_xp']} XP")
-        if st.button("Finish & Return to Dashboard"):
-            st.session_state.review_session = None
-            st.rerun()
-        return
-
-    word = session['words'][idx]
-    if session['current_q'] is None:
-        with st.spinner("Preparing question..."):
-            session['current_q'] = generate_question(
-                word, 
-                force_easy=session.get('force_easy', False), 
-                specific_type=session.get('specific_type', None)
-            )
-            session['answered'] = False
-            session['start_time'] = time.time()
-            
-    q = session['current_q']
-    
-    progress = (idx) / len(session['words'])
-    st.progress(progress, text=f"Word {idx + 1} of {len(session['words'])}")
-    
-    st.subheader(f"Type: {q['type'].replace('_', ' ').title()}")
-    
-    time_limit = 20
-    if not session['answered']:
-        timer_id = f"timer_{idx}_{int(session['start_time'])}"
-        st.markdown(f"""
-            <div style="font-size: 18px; font-weight: bold; color: #ff4b4b; margin-bottom: 15px;">
-                ⏳ Thời gian còn lại: <span id="{timer_id}">{time_limit}</span>s
-            </div>
-            <script>
-                var timeLeft = {time_limit};
-                var timerId = setInterval(function() {{
-                    if (timeLeft <= 0) {{
-                        clearInterval(timerId);
-                        var el = document.getElementById('{timer_id}');
-                        if(el) el.innerHTML = "Hết giờ!";
-                    }} else {{
-                        var el = document.getElementById('{timer_id}');
-                        if(el) el.innerHTML = timeLeft;
-                        timeLeft -= 1;
-                    }}
-                }}, 1000);
-            </script>
-        """, unsafe_allow_html=True)
-    
-    user_ans = None
-    simplify = False
-    
-    with st.form(key=f"question_form_{idx}_{session.get('force_easy', False)}"):
-        if q['type'] == 'fill_blank':
-            st.markdown(f"**Context:** {q['context']}")
-            st.markdown(f"**Hint:** `{q['hint']}`")
-            user_ans = st.text_input("Your answer:", key=f"input_{idx}")
-            
-        elif q['type'] == 'vi_to_en':
-            st.markdown(f"**Meaning:** {q['meaning_vi']}")
-            user_ans = st.radio("Choose the English word:", q['options'], key=f"radio_{idx}")
-            
-        elif q['type'] == 'listening_mcq':
-            st.markdown(f"**Meaning (Nghĩa):** {q['meaning_vi']}")
-            st.write("🎧 Hãy nghe 4 âm thanh dưới đây (chữ đã được giấu đi):")
-            
-            cols = st.columns(4)
-            option_labels = [] 
-            
-            for i, opt in enumerate(q['options']):
-                label = f"Lựa chọn {i+1}"
-                option_labels.append(label)
-                with cols[i]:
-                    st.write(label)
-                    fp = io.BytesIO()
-                    gTTS(text=opt, lang='en').write_to_fp(fp)
-                    fp.seek(0)
-                    st.audio(fp, format="audio/mp3")
-            
-            selected_label = st.radio("Chọn âm thanh đúng:", option_labels, key=f"radio_list_{idx}")
-            selected_index = option_labels.index(selected_label)
-            user_ans = q['options'][selected_index]
-            
-        elif q['type'] == 'spelling':
-            st.markdown(f"**Meaning:** {word['meaning_vi']}")
-            st.markdown(f"**Context:** {q['context']}")
-            st.markdown(f"**Hint:** `{q['hint']}`")
-            user_ans = st.text_input("Spell the word:", key=f"input_spell_{idx}")
-            
-        elif q['type'] == 'ipa_mcq':
-            st.markdown(f"**Meaning:** {word['meaning_vi']}")
-            user_ans = st.radio("Choose the correct IPA:", q['options'], key=f"radio_ipa_{idx}")
-
-        if q['type'] in ['fill_blank', 'spelling']:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
-            with col2:
-                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
-            with col3:
-                simplify = st.form_submit_button("❓ Câu này khó hiểu", disabled=session['answered'])
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
-            with col2:
-                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
-            simplify = False
-
-    if simplify and not session['answered']:
-        session['force_easy'] = True
-        session['specific_type'] = q['type']  
-        session['current_q'] = None           
-        st.rerun()
-        
-    if (submit or idk) and not session['answered']:
-        session['answered'] = True
-        elapsed_time = time.time() - session['start_time']
-        
-        is_timeout = elapsed_time > (time_limit + 2) 
-        
-        if idk:
-            is_correct = False
-            session['fail_reason'] = "Bạn đã chọn chưa thuộc từ này."
-        elif is_timeout:
-            is_correct = False
-            session['fail_reason'] = "Đã quá thời gian trả lời (20 giây)!"
-        else:
-            session['fail_reason'] = ""
-            if q['type'] in ['fill_blank', 'spelling']:
-                is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
-            else:
-                is_correct = user_ans == q['correct_answer']
-                
-        if not is_correct and q['type'] in ['fill_blank', 'spelling'] and not idk and not is_timeout:
-             session['diff_html'] = get_diff_html(user_ans, q['correct_answer'])
-        else:
-             session['diff_html'] = ""
-            
-        if is_correct:
-            session['correct'] += 1
-            st.session_state.session_combo += 1
-            xp_gain = 10 + (st.session_state.session_combo * 2)
-            award_xp(xp_gain)
-            session['session_xp'] += xp_gain
-            session['is_correct'] = True
-        else:
-            st.session_state.session_combo = 0
-            award_xp(2)
-            session['session_xp'] += 2
-            session['is_correct'] = False
-            
-        # Đã bật lại tính năng lưu tiến trình vào CSDL
-        process_answer(word['id'], is_correct)
-
-    if session['answered']:
-        st.divider()
-        status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
-        
-        if not session.get('is_correct'):
-            reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
-            st.error(f"❌ {reason}")
-            if session.get('diff_html'):
-                st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
-                st.write("") 
-
-        # Hiển thị thông tin từ vựng
-        st.markdown(
-            f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
-            f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
-            f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
-            f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
-        st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
-        
-        # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
-        try:
-            
-            combined_audio_bytes = b""
-            
-            # 1. Tạo audio Tiếng Anh (kiểm tra đảm bảo có chữ)
-            text_en = str(word.get('word', '')).strip()
-            if text_en:
-                fp_en = io.BytesIO()
-                gTTS(text=text_en, lang='en').write_to_fp(fp_en)
-                combined_audio_bytes += fp_en.getvalue()
-                
-            # 2. Tạo audio Tiếng Việt (kiểm tra đảm bảo có chữ)
-            text_vi = str(word.get('meaning_vi', '')).strip()
-            if text_vi:
-                fp_vi = io.BytesIO()
-                gTTS(text=text_vi, lang='vi').write_to_fp(fp_vi)
-                combined_audio_bytes += fp_vi.getvalue()
-            
-            # 3. Mã hóa sang Base64 và phát nếu file không trống
-            if combined_audio_bytes:
-                b64_audio = base64.b64encode(combined_audio_bytes).decode()
-                
-                audio_html = f'''
-                    <audio autoplay="true" style="display:none;">
-                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                    </audio>
-                '''
-                st.markdown(audio_html, unsafe_allow_html=True)
-            
-        except Exception as e:
-            st.error(f"Lỗi phát âm thanh: {e}")
-        
-        st.write("") 
-        if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
-            session['current_idx'] += 1
-            session['current_q'] = None
-            session['answered'] = False
-            session['force_easy'] = False  
-            session['specific_type'] = None
-            st.rerun()
-def process_answer(word_id, is_correct):
-    conn = get_db()
-    # Lấy dữ liệu hiện tại của từ vựng
-    word_data = conn.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
-    if not word_data:
         conn.close()
         return
 
-    # Tính toán thời gian ôn tập và độ khó mới
-    next_review_str, new_streak, new_diff = calculate_next_review(dict(word_data), is_correct)
-    
-    # Cập nhật số đếm
-    new_correct = word_data['correct_count'] + (1 if is_correct else 0)
-    new_wrong = word_data['wrong_count'] + (0 if is_correct else 1)
-    new_review_count = word_data['review_count'] + 1
-    
-    # Cập nhật trạng thái
-    status = 'learning'
-    if new_correct >= 5 and new_streak >= 3:
-        status = 'mastered'
-        
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Lưu vào database
-    conn.execute('''
-        UPDATE words 
-        SET next_review = ?, streak = ?, difficulty = ?, 
-            correct_count = ?, wrong_count = ?, review_count = ?, 
-            status = ?, last_review = ?
+    diff = word["difficulty"]
+    streak = word["current_streak"]
+    now = datetime.now()
+
+    if is_correct:
+        new_diff = min(100, diff + 7)
+        new_streak = streak + 1
+        # Short intervals (minutes): 10m -> 30m -> 2h -> 8h -> 24h -> 3 days
+        base_mins = 10 * (2.5 ** min(new_streak, 5))
+    else:
+        new_diff = max(5, diff - 10)
+        new_streak = 0
+        base_mins = 8  # Wrong words come back in ~8 mins
+
+    # 10% jitter to prevent block predictabilities
+    jitter = random.uniform(0.9, 1.1)
+    final_mins = max(5, int(base_mins * jitter))
+    next_review = now + timedelta(minutes=final_mins)
+
+    # Determine State
+    if new_streak >= 5 and new_diff > 70:
+        state = "MASTERED"
+    elif new_streak >= 1:
+        state = "REVIEW"
+    else:
+        state = "LEARNING"
+
+    cursor.execute("""
+        UPDATE words SET
+            difficulty = ?,
+            current_streak = ?,
+            correct_count = correct_count + ?,
+            wrong_count = wrong_count + ?,
+            total_reviews = total_reviews + 1,
+            last_review_at = ?,
+            next_review_at = ?,
+            learning_state = ?
         WHERE id = ?
-    ''', (next_review_str, new_streak, new_diff, new_correct, new_wrong, 
-          new_review_count, status, now_str, word_id))
+    """, (
+        new_diff,
+        new_streak,
+        1 if is_correct else 0,
+        0 if is_correct else 1,
+        now.strftime("%Y-%m-%d %H:%M:%S"),
+        next_review.strftime("%Y-%m-%d %H:%M:%S"),
+        state,
+        word_id
+    ))
     
+    # Record Review
+    cursor.execute("""
+        INSERT INTO reviews (word_id, question_type, user_answer, is_correct, difficulty_before, difficulty_after, reviewed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (word_id, word["last_question_type"] or "quiz", "submitted", 1 if is_correct else 0, diff, new_diff, now.strftime("%Y-%m-%d %H:%M:%S")))
+
+    # Update Gamification XP
+    xp_gain = 15 if (is_correct and diff > 50) else (10 if is_correct else 2)
+    cursor.execute("UPDATE user_stats SET xp = xp + ? WHERE id = 1", (xp_gain,))
+
     conn.commit()
     conn.close()
-# ==========================================
-# 6. TAB 3: NOTEBOOK & READING
-# ==========================================
-def render_notebook_tab():
-    st.header("📚 Sổ tay từ vựng (Notebook)")
-    conn = get_db()
-    
-    # Tự động lấy danh sách các chủ đề hiện có trong Database
-    topics_query = conn.execute("SELECT DISTINCT topic FROM words WHERE topic IS NOT NULL").fetchall()
-    topic_list = ["Tất cả"] + sorted([t['topic'] for t in topics_query if t['topic'].strip() != ""])
 
-    # 1. THANH TÌM KIẾM & BỘ LỌC (Thêm riêng bộ lọc Chủ đề)
-    col_search, col_topic, col_filter = st.columns([2, 1.5, 1.5])
-    with col_search:
-        search_term = st.text_input("🔍 Tìm kiếm từ vựng...", placeholder="Nhập từ hoặc nghĩa...")
-    with col_topic:
-        topic_filter = st.selectbox("🏷️ Chủ đề", topic_list)
-    with col_filter:
-        status_filter = st.selectbox("📌 Trạng thái", ["Tất cả", "new", "learning", "mastered"])
+def text_to_speech_html(en_word: str, vn_meaning: str = "", autoplay: bool = True):
+    """HTML JS Web Speech API wrapper for low-latency browser audio playback."""
+    clean_en = en_word.replace("'", "\\'").replace('"', '\\"')
+    clean_vn = vn_meaning.replace("'", "\\'").replace('"', '\\"')
     
-    # Xây dựng câu truy vấn dựa trên bộ lọc
+    js_code = f"""
+    <script>
+    function speakVocab() {{
+        if ('speechSynthesis' in window) {{
+            window.speechSynthesis.cancel();
+            
+            let msgEn = new SpeechSynthesisUtterance("{clean_en}");
+            msgEn.lang = 'en-US';
+            msgEn.rate = 0.9;
+            
+            msgEn.onend = function() {{
+                if ("{clean_vn}".length > 0) {{
+                    setTimeout(() => {{
+                        let msgVn = new SpeechSynthesisUtterance("{clean_vn}");
+                        msgVn.lang = 'vi-VN';
+                        msgVn.rate = 1.0;
+                        window.speechSynthesis.speak(msgVn);
+                    }}, 200);
+                }}
+            }};
+            
+            window.speechSynthesis.speak(msgEn);
+        }}
+    }}
+    {'speakVocab();' if autoplay else ''}
+    </script>
+    <button onclick="speakVocab()" style="
+        background: #2b2b36; border: 1px solid #4d4d57; color: #fff;
+        padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 14px;">
+        🔊 Nghe phát âm ({clean_en})
+    </button>
+    """
+    st.components.v1.html(js_code, height=50)
+
+# ==============================================================================
+# TAB 1 — SCAN TEXT
+# ==============================================================================
+def render_tab_scan():
+    st.markdown("### 📥 Quét văn bản & Trích xuất từ mới")
+    text_input = st.text_area("Dán đoạn văn tiếng Anh bạn muốn đọc/học tại đây:", height=180, placeholder="Paste English text here...")
+    
+    if st.button("🔎 SCAN TỪ MỚI", type="primary"):
+        if not text_input.strip():
+            st.warning("Vui lòng nhập đoạn văn bản.")
+            return
+
+        with st.spinner("🤖 AI đang phân tích ngữ cảnh và lọc từ mới..."):
+            # Fetch existing words to exclude
+            conn = get_db_connection()
+            existing = set(r["word"].lower() for r in conn.execute("SELECT word FROM words").fetchall())
+            conn.close()
+
+            prompt = f"""
+            Analyze the following text and extract potential new vocabulary words for an English learner.
+            Filter OUT:
+            1. Commonly known basic words (is, are, the, apple, run, simple words).
+            2. Words already in this list: {list(existing)[:100]}
+            
+            Text: "{text_input}"
+
+            Return JSON format:
+            {{
+                "extracted_words": [
+                    {{
+                        "word": "canonical form of word",
+                        "vietnamese_meaning": "accurate context meaning in Vietnamese",
+                        "english_definition": "simple 1-sentence English definition",
+                        "phonetic": "/IPA/",
+                        "example_sentence": "Very simple sentence for beginner",
+                        "topic": "General/Tech/Business etc."
+                    }}
+                ]
+            }}
+            """
+            
+            res = call_ai(prompt, system_prompt="You are an expert lexicographer making easy-to-understand flashcards.")
+            words_data = res.get("extracted_words", [])
+
+            if not words_data:
+                st.info("Không tìm thấy từ mới phù hợp hoặc tất cả các từ đã có trong sổ tay!")
+                return
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            added_count = 0
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            for item in words_data:
+                w = item["word"].strip()
+                if not w or w.lower() in existing:
+                    continue
+                
+                cursor.execute("""
+                    INSERT OR IGNORE INTO words 
+                    (word, normalized_word, vietnamese_meaning, english_definition, example_sentence, phonetic, topic, difficulty, first_learned_at, next_review_at, learning_state)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 15, ?, ?, 'NEW')
+                """, (
+                    w, w.lower(),
+                    item.get("vietnamese_meaning", ""),
+                    item.get("english_definition", ""),
+                    item.get("example_sentence", f"I use {w} every day."),
+                    item.get("phonetic", ""),
+                    item.get("topic", "General"),
+                    now_str, now_str
+                ))
+                added_count += 1
+            
+            conn.commit()
+            conn.close()
+            st.success(f"🎉 Đã quét xong! Thêm thành công {added_count} từ mới vào sổ tay học.")
+            
+            st.markdown("#### 📋 Danh sách từ vừa nạp:")
+            for item in words_data:
+                with st.expander(f"✨ **{item['word']}** `{item.get('phonetic', '')}` — {item.get('vietnamese_meaning', '')}"):
+                    st.write(f"**Định nghĩa:** {item.get('english_definition')}")
+                    st.write(f"**Ví dụ dễ:** *{item.get('example_sentence')}*")
+                    st.caption(f"Topic: {item.get('topic')} | initial difficulty: 15/100")
+
+# ==============================================================================
+# TAB 2 — ÔN TẬP (CORE GAMIFIED SRS)
+# ==============================================================================
+def render_tab_review():
+    conn = get_db_connection()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Metrics Overview
+    due_count = conn.execute("SELECT COUNT(*) FROM words WHERE next_review_at <= ? OR learning_state = 'NEW'", (now_str,)).fetchone()[0]
+    total_count = conn.execute("SELECT COUNT(*) FROM words").fetchone()[0]
+    stats = conn.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
+    conn.close()
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(f"<div class='stat-badge'>🔥 <b>Streak:</b> {stats['streak']} ngày</div>", unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"<div class='stat-badge'>⚡ <b>XP:</b> {stats['xp']}</div>", unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"<div class='stat-badge'>⏳ <b>Đến hạn ôn:</b> {due_count} từ</div>", unsafe_allow_html=True)
+    with col4:
+        st.markdown(f"<div class='stat-badge'>📚 <b>Tổng số từ:</b> {total_count}</div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Initialize Session State Variables
+    if "review_session_active" not in st.session_state:
+        st.session_state.review_session_active = False
+        st.session_state.session_words = []
+        st.session_state.session_idx = 0
+        st.session_state.current_q = None
+        st.session_state.answer_submitted = False
+        st.session_state.session_results = []
+
+    # START SCREEN OR ACTIVE SESSION
+    if not st.session_state.review_session_active:
+        st.markdown("<div class='main-card' style='text-align: center;'>", unsafe_allow_html=True)
+        if due_count > 0:
+            st.markdown("## 🎯 Sẵn sàng chinh phục bài ôn tập ngắn?")
+            st.write("Mỗi lượt chỉ 5 từ — nhanh chóng, vừa sức, khắc sâu trí nhớ!")
+            if st.button("🔥 BẮT ĐẦU ÔN (5 TỪ)", type="primary", use_container_width=True):
+                # Fetch 5 words prioritizing wrong/due words
+                conn = get_db_connection()
+                words = conn.execute("""
+                    SELECT * FROM words 
+                    WHERE next_review_at <= ? OR learning_state = 'NEW'
+                    ORDER BY 
+                        CASE WHEN wrong_count > correct_count THEN 1 ELSE 2 END,
+                        next_review_at ASC
+                    LIMIT 5
+                """, (now_str,)).fetchall()
+                conn.close()
+
+                if words:
+                    st.session_state.session_words = [dict(w) for w in words]
+                    st.session_state.session_idx = 0
+                    st.session_state.review_session_active = True
+                    st.session_state.session_results = []
+                    st.session_state.answer_submitted = False
+                    st.session_state.current_q = None
+                    st.rerun()
+        else:
+            # Countdown view when no reviews are due
+            conn = get_db_connection()
+            next_word = conn.execute("SELECT next_review_at FROM words WHERE next_review_at > ? ORDER BY next_review_at ASC LIMIT 1", (now_str,)).fetchone()
+            conn.close()
+            
+            st.markdown("🎉 **Bạn đã hoàn thiện tất cả các lượt ôn tới thời điểm này!**")
+            if next_word and next_word["next_review_at"]:
+                st.info(f"⏳ Lượt ôn tiếp theo sẵn sàng vào lúc: `{next_word['next_review_at']}`")
+            else:
+                st.write("Hãy sang Tab **📥 Scan từ mới** để nạp thêm từ!")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # ACTIVE QUESTION SESSION
+    session_words = st.session_state.session_words
+    idx = st.session_state.session_idx
+
+    if idx >= len(session_words):
+        # SESSION FINISHED SCREEN
+        st.markdown("<div class='main-card' style='text-align: center;'>", unsafe_allow_html=True)
+        st.balloons()
+        st.markdown("## 🎉 SESSION COMPLETE!")
+        st.write(f"Bạn đã vượt qua **{len(session_words)}/{len(session_words)}** từ trong lượt này!")
+        
+        corrects = sum(1 for r in st.session_state.session_results if r['is_correct'])
+        wrongs = len(session_words) - corrects
+        acc = int((corrects / len(session_words)) * 100) if session_words else 0
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Đúng", f"{corrects} từ")
+        c2.metric("Sai / Quên", f"{wrongs} từ")
+        c3.metric("Chính xác", f"{acc}%")
+
+        if st.button("🚀 XÁC NHẬN & QUAY VỀ", type="primary"):
+            st.session_state.review_session_active = False
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Render Current Question
+    current_word = session_words[idx]
+    
+    # Generate question object once per index
+    if st.session_state.current_q is None:
+        q_types = ["context_fill", "mcq_vn_to_en", "listening_meaning", "spelling", "phonetic_mcq"]
+        q_type = random.choice(q_types)
+        
+        # Save last question type in DB
+        conn = get_db_connection()
+        conn.execute("UPDATE words SET last_question_type = ? WHERE id = ?", (q_type, current_word["id"]))
+        conn.commit()
+        conn.close()
+
+        # Build distractor options if needed
+        conn = get_db_connection()
+        other_words = [r["word"] for r in conn.execute("SELECT word FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3", (current_word["id"],)).fetchall()]
+        other_phonetics = [r["phonetic"] for r in conn.execute("SELECT phonetic FROM words WHERE id != ? AND phonetic != '' ORDER BY RANDOM() LIMIT 3", (current_word["id"],)).fetchall()]
+        conn.close()
+
+        while len(other_words) < 3:
+            other_words.append("sample")
+        while len(other_phonetics) < 3:
+            other_phonetics.append("/ˈsæmpəl/")
+
+        st.session_state.current_q = {
+            "type": q_type,
+            "word": current_word,
+            "other_words": other_words,
+            "other_phonetics": other_phonetics,
+            "hint": generate_smart_hint(current_word["word"], current_word["difficulty"])
+        }
+
+    q = st.session_state.current_q
+    w_obj = q["word"]
+
+    st.markdown(f"#### 🎯 Câu {idx + 1} / {len(session_words)} — [Chế độ: {q['type'].upper()}]")
+    st.progress((idx + 1) / len(session_words))
+
+    st.markdown("<div class='main-card'>", unsafe_allow_html=True)
+    
+    user_answer = ""
+    is_correct = False
+
+    # Render 5 Specific Question Types
+    if q["type"] == "context_fill":
+        st.write(f"**Điền từ còn thiếu vào câu:**")
+        sentence = w_obj["example_sentence"]
+        # Replace target word with blank
+        pattern = re.compile(re.escape(w_obj["word"]), re.IGNORECASE)
+        blanked_sentence = pattern.sub("_______", sentence)
+        
+        st.markdown(f"### *\"{blanked_sentence}\"*")
+        st.caption(f"💡 Gợi ý chữ: `{q['hint']}`")
+        user_answer = st.text_input("Nhập từ tiếng Anh:", key=f"q_{idx}")
+
+    elif q["type"] == "mcq_vn_to_en":
+        st.write("**Chọn từ tiếng Anh phù hợp với nghĩa:**")
+        st.markdown(f"## 🇻🇳 **\"{w_obj['vietnamese_meaning']}\"**")
+        options = [w_obj["word"]] + q["other_words"]
+        random.seed(w_obj["id"])
+        random.shuffle(options)
+        user_answer = st.radio("Lựa chọn của bạn:", options, key=f"q_{idx}")
+
+    elif q["type"] == "listening_meaning":
+        st.write("**Nghe âm thanh và chọn đúng nghĩa tiếng Việt:**")
+        text_to_speech_html(w_obj["word"], autoplay=False)
+        st.markdown(f"### 🔊 Từ vừa nghe có nghĩa là gì?")
+        
+        # Distractor meanings
+        conn = get_db_connection()
+        other_means = [r["vietnamese_meaning"] for r in conn.execute("SELECT vietnamese_meaning FROM words WHERE id != ? LIMIT 3", (w_obj["id"],)).fetchall()]
+        conn.close()
+        while len(other_means) < 3: other_means.append("Khác")
+        
+        options = [w_obj["vietnamese_meaning"]] + other_means
+        random.shuffle(options)
+        user_answer = st.radio("Chọn nghĩa đúng:", options, key=f"q_{idx}")
+
+    elif q["type"] == "spelling":
+        st.write("**Nghe từ và viết lại chính tả chính xác:**")
+        text_to_speech_html(w_obj["word"], autoplay=True)
+        st.caption(f"💡 Gợi ý chữ: `{q['hint']}`")
+        user_answer = st.text_input("Viết chính tả từ bạn nghe được:", key=f"q_{idx}")
+
+    elif q["type"] == "phonetic_mcq":
+        st.write(f"**Chọn phiên âm đúng (IPA) cho từ:**")
+        st.markdown(f"## **{w_obj['word']}** *(Nghĩa: {w_obj['vietnamese_meaning']})*")
+        
+        correct_ipa = w_obj["phonetic"] if w_obj["phonetic"] else "/ˈdemo/"
+        options = [correct_ipa] + q["other_phonetics"]
+        random.shuffle(options)
+        user_answer = st.radio("Chọn IPA đúng:", options, key=f"q_{idx}")
+
+    col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 2])
+
+    with col_btn1:
+        if st.button("Nộp bài", type="primary", key=f"sub_{idx}", disabled=st.session_state.answer_submitted):
+            st.session_state.answer_submitted = True
+            
+            # Answer Evaluation Logic
+            ans_clean = str(user_answer).strip().lower()
+            if q["type"] in ["context_fill", "spelling"]:
+                is_correct = (ans_clean == w_obj["word"].strip().lower())
+            elif q["type"] == "mcq_vn_to_en":
+                is_correct = (ans_clean == w_obj["word"].strip().lower())
+            elif q["type"] == "listening_meaning":
+                is_correct = (ans_clean == w_obj["vietnamese_meaning"].strip().lower())
+            elif q["type"] == "phonetic_mcq":
+                correct_ipa = w_obj["phonetic"] if w_obj["phonetic"] else "/ˈdemo/"
+                is_correct = (ans_clean == correct_ipa.strip().lower())
+
+            update_word_srs(w_obj["id"], is_correct)
+            st.session_state.session_results.append({"word": w_obj["word"], "is_correct": is_correct})
+            st.rerun()
+
+    with col_btn2:
+        if st.button("😵 Quên từ", key=f"forget_{idx}", disabled=st.session_state.answer_submitted):
+            st.session_state.answer_submitted = True
+            update_word_srs(w_obj["id"], is_correct=False)
+            st.session_state.session_results.append({"word": w_obj["word"], "is_correct": False})
+            st.rerun()
+
+    with col_btn3:
+        with st.popover("💬 Feedback"):
+            fb_reason = st.selectbox("Lý do:", ["Câu khó hiểu", "Đáp án sai", "Gợi ý không tốt", "Lỗi khác"])
+            fb_detail = st.text_input("Chi tiết:")
+            if st.button("Gửi Feedback"):
+                conn = get_db_connection()
+                conn.execute("INSERT INTO feedback (word_id, question_type, reason, details, created_at) VALUES (?,?,?,?,?)",
+                             (w_obj["id"], q["type"], fb_reason, fb_detail, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
+                conn.close()
+                st.success("Đã ghi nhận feedback!")
+
+    # SHOW RESULT AFTER SUBMITTED
+    if st.session_state.answer_submitted:
+        last_res = st.session_state.session_results[-1]
+        if last_res["is_correct"]:
+            st.markdown(f"<div class='correct-box'>✅ <b>ĐÚNG RỒI! Nice effort!</b></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='wrong-box'>❌ <b>CHƯA CHÍNH XÁC! Hãy cố gắng ở lượt sau.</b></div>", unsafe_allow_html=True)
+        
+        st.write("---")
+        st.markdown(f"### 🔤 Đáp án: **{w_obj['word']}** `{w_obj['phonetic']}`")
+        st.write(f"🇻🇳 **Nghĩa:** {w_obj['vietnamese_meaning']}")
+        st.write(f"📝 **Ví dụ:** *{w_obj['example_sentence']}*")
+        
+        # Audio autoplay post answer
+        text_to_speech_html(w_obj["word"], w_obj["vietnamese_meaning"], autoplay=True)
+
+        if st.button("➡️ TIẾP TỤC", type="primary"):
+            st.session_state.session_idx += 1
+            st.session_state.answer_submitted = False
+            st.session_state.current_q = None
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ==============================================================================
+# TAB 3 — SỔ TAY (FLASHCARDS & AI EDIT)
+# ==============================================================================
+def render_tab_notebook():
+    st.markdown("### 📚 Sổ tay từ vựng Flashcards")
+    
+    conn = get_db_connection()
+    topics = [r["topic"] for r in conn.execute("SELECT DISTINCT topic FROM words").fetchall()]
+    conn.close()
+
+    col_f1, col_f2 = st.columns([2, 2])
+    with col_f1:
+        search = st.text_input("🔎 Tìm kiếm từ...", "")
+    with col_f2:
+        selected_topic = st.selectbox("Lọc theo Topic:", ["Tất cả"] + topics)
+
     query = "SELECT * FROM words WHERE 1=1"
     params = []
-    
-    if status_filter != "Tất cả":
-        query += " AND status = ?"
-        params.append(status_filter)
-        
-    if topic_filter != "Tất cả":
+    if search:
+        query += " AND (word LIKE ? OR vietnamese_meaning LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
+    if selected_topic != "Tất cả":
         query += " AND topic = ?"
-        params.append(topic_filter)
-        
-    if search_term:
-        query += " AND (word LIKE ? OR meaning_vi LIKE ?)"
-        params.extend([f"%{search_term}%", f"%{search_term}%"])
-        
-    query += " ORDER BY difficulty DESC"
+        params.append(selected_topic)
+    
+    query += " ORDER BY id DESC"
+    
+    conn = get_db_connection()
     words = conn.execute(query, params).fetchall()
-    
-    st.write(f"📝 Tổng số từ hiện có: **{len(words)}**")
-    st.divider()
-    
-    # 2. HIỂN THỊ DẠNG THẺ (CARD LAYOUT)
-    if words:
-        cols_per_row = 2
-        for i in range(0, len(words), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for j in range(cols_per_row):
-                if i + j < len(words):
-                    w = words[i + j]
-                    with cols[j]:
-                        with st.container(border=True):
-                            c_word, c_audio = st.columns([4, 1])
-                            with c_word:
-                                status_icon = "🟢" if w['status'] == 'new' else "🔵" if w['status'] == 'learning' else "🔥"
-                                st.subheader(f"{w['word']} {status_icon}")
-                                
-                                # HIGHLIGHT CHỦ ĐỀ: Đưa chủ đề lên ngay dưới từ vựng thành 1 tag nổi bật
-                                st.markdown(
-                                    f"/{w['ipa']}/ • *{w['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
-                                    f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{w['topic']}</b></span>", 
-                                    unsafe_allow_html=True
-                                )
-                            with c_audio:
-                                if st.button("🔊", key=f"audio_btn_{w['id']}", help="Nghe phát âm"):
-                                    play_audio(w['word'])
-                            
-                            st.write("") # Tạo khoảng cách nhỏ
-                            st.markdown(f"**🇻🇳 Nghĩa:** {w['meaning_vi']}")
-                            st.markdown(f"**📝 Ví dụ:** _{w['example_sentence']}_")
-                            
-                            next_rev = w['next_review'] if w['next_review'] else 'Chưa có'
-                            st.markdown(f"""
-                                <hr style="margin: 10px 0;">
-                                <div style='font-size: 0.85rem; color: #888;'>
-                                    <b>🔄 Ôn tập kế tiếp:</b> {next_rev}<br>
-                                    <b>🎯 Độ khó:</b> {w['difficulty']}/100 &nbsp;|&nbsp; 
-                                    <b>📊 Tỉ lệ:</b> ✅ {w['correct_count']} - ❌ {w['wrong_count']}
-                                </div>
-                            """, unsafe_allow_html=True)
-    else:
-        st.info("Không tìm thấy từ vựng nào phù hợp với tìm kiếm của bạn.")
-
-    # ==========================================
-    # PHẦN AI READING GENERATOR
-    # ==========================================
-    st.divider()
-    st.subheader("📖 AI Reading Generator")
-    st.write("Tạo một đoạn văn ngắn sử dụng các từ vựng bạn đang học để luyện đọc.")
-    
-    topics = conn.execute("SELECT topic, COUNT(*) as cnt FROM words GROUP BY topic HAVING cnt >= 5").fetchall()
     conn.close()
-    
-    if not topics:
-        st.info("Bạn cần ít nhất 5 từ vựng trong cùng một chủ đề để AI có thể tạo bài đọc.")
-    else:
-        topic_names = [f"{t['topic']} ({t['cnt']} words)" for t in topics]
-        sel_topic = st.selectbox("Chọn chủ đề để tạo bài đọc:", topic_names)
-        actual_topic = sel_topic.split(" (")[0]
-        
-        if st.button("Tạo bài đọc (Mini-Reading)", type="primary"):
-            with st.spinner("AI đang soạn bài đọc cho bạn..."):
-                conn = get_db()
-                topic_words = conn.execute("SELECT word, difficulty FROM words WHERE topic = ? LIMIT 15", (actual_topic,)).fetchall()
-                conn.close()
-                
-                word_list = [w['word'] for w in topic_words]
-                min_diff = min([w['difficulty'] for w in topic_words])
-                
-                prompt = f"""
-                Write a short reading paragraph (around 100-150 words) about the topic '{actual_topic}'.
-                You MUST use as many of these words as possible naturally: {', '.join(word_list)}.
-                The reading difficulty should match a learner level of {min_diff}/100 (keep sentences simple).
-                Return JSON format:
-                {{
-                    "title": "...",
-                    "content": "..."
-                }}
-                """
-                res = call_ai(prompt)
-                if res and 'content' in res:
-                    st.success("Tạo bài đọc thành công!")
-                    with st.container(border=True):
-                        st.markdown(f"### {res.get('title', 'Reading')}")
-                        st.write(res['content'])
-                else:
-                    st.error("Có lỗi xảy ra khi tạo bài đọc.")
 
-# ==========================================
-# 7. MAIN LAYOUT
-# ==========================================
+    st.write(f"Hiển thị **{len(words)}** từ vựng.")
+
+    cols = st.columns(2)
+    for i, w in enumerate(words):
+        with cols[i % 2]:
+            st.markdown("<div class='main-card'>", unsafe_allow_html=True)
+            st.markdown(f"### **{w['word']}** `{w['phonetic']}`")
+            st.write(f"🇻🇳 **Nghĩa:** {w['vietnamese_meaning']}")
+            st.write(f"📖 **Ví dụ:** *{w['example_sentence']}*")
+            
+            acc = int((w['correct_count'] / w['total_reviews']) * 100) if w['total_reviews'] > 0 else 0
+            st.caption(f"Topic: {w['topic']} | Độ khó: {w['difficulty']}/100 | Accuracy: {acc}% | Streak: {w['current_streak']}")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                text_to_speech_html(w['word'], w['vietnamese_meaning'], autoplay=False)
+            with c2:
+                with st.popover("✏️ Sửa / AI Fix"):
+                    new_meaning = st.text_input("Nghĩa Việt mới:", w['vietnamese_meaning'], key=f"edit_m_{w['id']}")
+                    new_ex = st.text_input("Ví dụ mới:", w['example_sentence'], key=f"edit_e_{w['id']}")
+                    if st.button("Lưu thay đổi", key=f"save_edit_{w['id']}"):
+                        c = get_db_connection()
+                        c.execute("UPDATE words SET vietnamese_meaning = ?, example_sentence = ? WHERE id = ?", (new_meaning, new_ex, w['id']))
+                        c.commit()
+                        c.close()
+                        st.success("Đã lưu!")
+                        st.rerun()
+
+                    if st.button("🤖 AI Sửa tự động", key=f"ai_fix_{w['id']}"):
+                        res = call_ai(f"Improve explanation for word: '{w['word']}'. Context definition. Return JSON: {{'vietnamese_meaning': '...', 'phonetic': '...', 'example_sentence': '...'}}")
+                        if res:
+                            c = get_db_connection()
+                            c.execute("UPDATE words SET vietnamese_meaning = ?, phonetic = ?, example_sentence = ? WHERE id = ?",
+                                      (res.get('vietnamese_meaning', new_meaning), res.get('phonetic', w['phonetic']), res.get('example_sentence', new_ex), w['id']))
+                            c.commit()
+                            c.close()
+                            st.success("AI đã tối ưu thông tin từ!")
+                            st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+# ==============================================================================
+# TAB 4 — READING (AI PASSAGE & GRADED TRANSLATION)
+# ==============================================================================
+def render_tab_reading():
+    st.markdown("### 📖 Reading Practice (Luyện đọc ngữ cảnh)")
+    
+    conn = get_db_connection()
+    topics = [r["topic"] for r in conn.execute("SELECT topic, COUNT(*) as c FROM words GROUP BY topic HAVING c >= 3").fetchall()]
+    conn.close()
+
+    if not topics:
+        st.info("Cần tối thiểu 3-5 từ thuộc cùng một Topic trong Sổ tay để AI sinh bài đọc!")
+        return
+
+    selected_topic = st.selectbox("Chọn Topic để làm bài Reading:", topics)
+
+    if st.button("⚡ TẠO BÀI READING MỚI", type="primary"):
+        conn = get_db_connection()
+        words = conn.execute("SELECT * FROM words WHERE topic = ? ORDER BY difficulty ASC LIMIT 10", (selected_topic,)).fetchall()
+        conn.close()
+        
+        target_vocab = [w["word"] for w in words]
+        min_diff = min([w["difficulty"] for w in words]) if words else 20
+
+        prompt = f"""
+        Generate a short, coherent reading passage (100-150 words) suitable for English learners.
+        Target topic: {selected_topic}
+        Required difficulty level: {min_diff}/100 (Keep vocabulary simple enough for this level).
+        You MUST naturally embed these target words: {target_vocab}
+
+        Return JSON format:
+        {{
+            "title": "Passage Title",
+            "passage": "Full English passage text...",
+            "target_words_used": {json.dumps(target_vocab)}
+        }}
+        """
+        
+        with st.spinner("🤖 AI đang biên soạn bài đọc phù hợp trình độ..."):
+            res = call_ai(prompt)
+            if res:
+                st.session_state.current_reading = res
+
+    if "current_reading" in st.session_state and st.session_state.current_reading:
+        rd = st.session_state.current_reading
+        st.markdown("<div class='main-card'>", unsafe_allow_html=True)
+        st.markdown(f"## 📜 {rd.get('title', 'Reading Passage')}")
+        st.markdown(f"*{rd.get('passage')}*")
+        st.caption(f"Từ vựng mục tiêu: {', '.join(rd.get('target_words_used', []))}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("#### 🇻🇳 Hãy dịch đoạn văn trên sang tiếng Việt:")
+        user_translation = st.text_area("Bản dịch của bạn:", height=150)
+
+        if st.button("📝 NỘP BÀI DỊCH & CHẤM ĐIỂM", type="primary"):
+            if not user_translation.strip():
+                st.warning("Vui lòng nhập bản dịch trước khi nộp.")
+                return
+
+            eval_prompt = f"""
+            Evaluate this Vietnamese translation for the English reading passage.
+            English Passage: "{rd.get('passage')}"
+            User Translation: "{user_translation}"
+
+            Return JSON format:
+            {{
+                "semantic_accuracy": 85,
+                "comprehension": 90,
+                "feedback": "Detailed constructive feedback on accuracy and mistranslations",
+                "suggested_translation": "Smooth Vietnamese translation"
+            }}
+            """
+            with st.spinner("🤖 AI đang chấm điểm bản dịch của bạn..."):
+                eval_res = call_ai(eval_prompt)
+                if eval_res:
+                    st.markdown("<div class='main-card'>", unsafe_allow_html=True)
+                    st.markdown("### 📊 ĐÁNH GIÁ CỦA AI")
+                    c1, c2 = st.columns(2)
+                    c1.metric("Độ chính xác nghĩa", f"{eval_res.get('semantic_accuracy', 0)}%")
+                    c2.metric("Độ hiểu bài", f"{eval_res.get('comprehension', 0)}%")
+
+                    st.markdown(f"**💬 Nhận xét:** {eval_res.get('feedback')}")
+                    st.markdown(f"**💡 Bản dịch gợi ý chuẩn:**\n*{eval_res.get('suggested_translation')}*")
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                    # Record reading session in SQLite
+                    conn = get_db_connection()
+                    conn.execute("""
+                        INSERT INTO reading_sessions (topic, passage, user_translation, accuracy, comprehension, feedback, reviewed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (selected_topic, rd.get('passage'), user_translation, eval_res.get('semantic_accuracy', 0),
+                          eval_res.get('comprehension', 0), eval_res.get('feedback'), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    conn.commit()
+                    conn.close()
+
+# ==============================================================================
+# MAIN ROUTER
+# ==============================================================================
 def main():
-    init_db()
+    st.title("⚡ Vocab Conquest — Gamified SRS Learning")
     
-    if 'session_xp' not in st.session_state:
-        st.session_state.session_xp = 0
-    if 'session_combo' not in st.session_state:
-        st.session_state.session_combo = 0
-        
-    st.title("🧠 VOCAB QUEST")
-    st.markdown("*Learn a little. Come back often. Get better.*")
-    
-    tab1, tab2, tab3 = st.tabs(["📥 Scan", "⚔️ Review", "📚 Notebook"])
-    
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📥 Scan từ mới", 
+        "🎯 Ôn tập", 
+        "📚 Sổ tay", 
+        "📖 Reading"
+    ])
+
     with tab1:
-        render_scan_tab()
-        
+        render_tab_scan()
     with tab2:
-        render_review_tab()
-        
+        render_tab_review()
     with tab3:
-        render_notebook_tab()
+        render_tab_notebook()
+    with tab4:
+        render_tab_reading()
 
 if __name__ == "__main__":
     main()
