@@ -624,13 +624,13 @@ def render_review_tab():
         else:
              session['diff_html'] = ""
             
-       if is_correct:
-            session['correct'] += 1
-            st.session_state.session_combo += 1
-            xp_gain = 10 + (st.session_state.session_combo * 2)
-            award_xp(xp_gain)
-            session['session_xp'] += xp_gain
-            session['is_correct'] = True
+           if is_correct:
+                session['correct'] += 1
+                st.session_state.session_combo += 1
+                xp_gain = 10 + (st.session_state.session_combo * 2)
+                award_xp(xp_gain)
+                session['session_xp'] += xp_gain
+                session['is_correct'] = True
         else:
             st.session_state.session_combo = 0
             award_xp(2)
