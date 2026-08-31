@@ -633,7 +633,7 @@ def render_review_tab():
             session['session_xp'] += 2
             session['is_correct'] = False
             
-        process_answer(word, is_correct)
+        process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
