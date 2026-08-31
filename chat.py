@@ -927,7 +927,29 @@ def render_review_tab():
             
         st.info(f"**Correct Answer:** {q['correct_answer']}")
         if q['type'] == 'ipa_mcq':
-            st.info(f"**Word:** {word['word']}")
+            cols_per_row = 2
+            for i in range(0, len(words), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j in range(cols_per_row):
+                    if i + j < len(words):
+                        w = words[i + j]
+                        with cols[j]:
+                            with st.container(border=True):
+                                c_word, c_audio = st.columns([4, 1])
+                                with c_word:
+                                    status_icon = "🟢" if w['status'] == 'new' else "🔵" if w['status'] == 'learning' else "🔥"
+                                    st.subheader(f"{w['word']} {status_icon}")
+                                    
+                                    # HIGHLIGHT CHỦ ĐỀ: Đưa chủ đề lên ngay dưới từ vựng thành 1 tag nổi bật
+                                    st.markdown(
+                                        f"/{w['ipa']}/ • *{w['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
+                                        f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{w['topic']}</b></span>", 
+                                        unsafe_allow_html=True
+                                    )
+                                
+                                st.write("") # Tạo khoảng cách nhỏ
+                                st.markdown(f"**🇻🇳 Nghĩa:** {w['meaning_vi']}")
+                                st.markdown(f"**📝 Ví dụ:** _{w['example_sentence']}_")
             
         # AUDIO PHÁT TRỌN VẸN
         play_audio(word['word'], autoplay=True)
