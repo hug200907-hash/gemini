@@ -631,14 +631,14 @@ def render_review_tab():
                 award_xp(xp_gain)
                 session['session_xp'] += xp_gain
                 session['is_correct'] = True
-        else:
-            st.session_state.session_combo = 0
-            award_xp(2)
-            session['session_xp'] += 2
-            session['is_correct'] = False
-            
-        # GỌI HÀM LƯU VÀO DATABASE Ở ĐÂY
-        process_answer(word['id'], is_correct)
+            else:
+                st.session_state.session_combo = 0
+                award_xp(2)
+                session['session_xp'] += 2
+                session['is_correct'] = False
+                
+            # GỌI HÀM LƯU VÀO DATABASE Ở ĐÂY
+            process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
