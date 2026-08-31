@@ -633,7 +633,8 @@ def render_review_tab():
             session['session_xp'] += 2
             session['is_correct'] = False
             
-        process_answer(word, is_correct)
+        # Đã sửa ở đây: truyền word['id'] thay vì word
+        process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
@@ -658,20 +659,40 @@ def render_review_tab():
         st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
         st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
         
-        # Audio tiếng Anh tự động phát
-        play_audio(word['word'], autoplay=True)
-        
-        # Audio tiếng Việt (không autoplay để tránh nhiễu âm thanh)
+        # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
+            import base64
+            # File Tiếng Anh
+            fp_en = io.BytesIO()
+            gTTS(text=word['word'], lang='en').write_to_fp(fp_en)
+            b64_en = base64.b64encode(fp_en.getvalue()).decode()
+            
+            # File Tiếng Việt
             fp_vi = io.BytesIO()
             gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
-            fp_vi.seek(0)
-            st.write("🔊 **Nghe nghĩa tiếng Việt:**")
-            st.audio(fp_vi, format="audio/mp3")
+            b64_vi = base64.b64encode(fp_vi.getvalue()).decode()
+            
+            audio_html = f"""
+                <audio id="audio_en_{idx}" src="data:audio/mp3;base64,{b64_en}" autoplay></audio>
+                <audio id="audio_vi_{idx}" src="data:audio/mp3;base64,{b64_vi}"></audio>
+                <script>
+                    var a_en = document.getElementById("audio_en_{idx}");
+                    var a_vi = document.getElementById("audio_vi_{idx}");
+                    if(a_en) {{
+                        a_en.onended = function() {{
+                            // Nghỉ 500ms (nửa giây) cho tự nhiên rồi đọc tiếng Việt
+                            setTimeout(function() {{
+                                if(a_vi) a_vi.play();
+                            }}, 500); 
+                        }};
+                    }}
+                </script>
+            """
+            st.components.v1.html(audio_html, height=0)
         except Exception as e:
             pass
         
-        st.write("") # Tạo khoảng cách nhỏ trước nút tiếp tục
+        st.write("") 
         if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
             session['current_idx'] += 1
             session['current_q'] = None
