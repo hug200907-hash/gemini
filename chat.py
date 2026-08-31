@@ -670,31 +670,32 @@ def render_review_tab():
             from gtts import gTTS
             import io
             
-            # 1. Tạo audio Tiếng Anh
-            fp_en = io.BytesIO()
-            gTTS(text=word['word'], lang='en').write_to_fp(fp_en)
+            combined_audio_bytes = b""
             
-            # 2. Tạo khoảng lặng nhỏ (0.5s) bằng cách dùng gTTS đọc một dấu chấm hoặc phẩy (tùy chọn)
-            fp_pause = io.BytesIO()
-            gTTS(text="... ", lang='en').write_to_fp(fp_pause)
+            # 1. Tạo audio Tiếng Anh (kiểm tra đảm bảo có chữ)
+            text_en = str(word.get('word', '')).strip()
+            if text_en:
+                fp_en = io.BytesIO()
+                gTTS(text=text_en, lang='en').write_to_fp(fp_en)
+                combined_audio_bytes += fp_en.getvalue()
+                
+            # 2. Tạo audio Tiếng Việt (kiểm tra đảm bảo có chữ)
+            text_vi = str(word.get('meaning_vi', '')).strip()
+            if text_vi:
+                fp_vi = io.BytesIO()
+                gTTS(text=text_vi, lang='vi').write_to_fp(fp_vi)
+                combined_audio_bytes += fp_vi.getvalue()
             
-            # 3. Tạo audio Tiếng Việt
-            fp_vi = io.BytesIO()
-            gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
-            
-            # 4. Gộp toàn bộ các luồng byte MP3 lại với nhau thành 1 file duy nhất
-            combined_audio_bytes = fp_en.getvalue() + fp_pause.getvalue() + fp_vi.getvalue()
-            
-            # 5. Mã hóa sang Base64 để nhúng vào HTML
-            b64_audio = base64.b64encode(combined_audio_bytes).decode()
-            
-            # 6. Phát trên DOM chính, trình duyệt sẽ cho phép autoplay vì bạn vừa click nút Submit
-            audio_html = f'''
-                <audio autoplay="true" style="display:none;">
-                    <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                </audio>
-            '''
-            st.markdown(audio_html, unsafe_allow_html=True)
+            # 3. Mã hóa sang Base64 và phát nếu file không trống
+            if combined_audio_bytes:
+                b64_audio = base64.b64encode(combined_audio_bytes).decode()
+                
+                audio_html = f'''
+                    <audio autoplay="true" style="display:none;">
+                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+                    </audio>
+                '''
+                st.markdown(audio_html, unsafe_allow_html=True)
             
         except Exception as e:
             st.error(f"Lỗi phát âm thanh: {e}")
