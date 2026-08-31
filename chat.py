@@ -638,7 +638,17 @@ def render_review_tab():
     if session['answered']:
         st.divider()
         if session.get('is_correct'):
-            st.success("🔥 Correct! Nice job.")
+            # ĐÃ THAY ĐỔI THEO ĐÚNG ĐỊNH DẠNG BẠN YÊU CẦU:
+            status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
+            st.markdown(f"🔥 Correct! Nice job.")
+            st.markdown(
+                f"**{word['word']} {status_icon}**<br>"
+                f"/{word['ipa']}/ • *{word['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>",
+                unsafe_allow_html=True
+            )
+            st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
+            st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
         else:
             reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
             st.error(f"❌ {reason}")
@@ -647,31 +657,15 @@ def render_review_tab():
                 st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
                 st.write("") 
             
-        # --- HIỂN THỊ DẠNG THẺ (CARD LAYOUT) GIỐNG HỆT TAB NOTEBOOK ---
-        st.markdown("### 📌 Thông tin từ vựng:")
-        with st.container(border=True):
             status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
-            st.subheader(f"{word['word']} {status_icon}")
-            
             st.markdown(
+                f"**{word['word']} {status_icon}**<br>"
                 f"/{word['ipa']}/ • *{word['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>", 
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>",
                 unsafe_allow_html=True
             )
-            
-            st.write("") 
-            st.markdown(f"**🇻🇳 Nghĩa:** {word['meaning_vi']}")
-            st.markdown(f"**📝 Ví dụ:** _{word['example_sentence']}_")
-            
-            next_rev = word['next_review'] if word['next_review'] else 'Chưa có'
-            st.markdown(f"""
-                <hr style="margin: 10px 0;">
-                <div style='font-size: 0.85rem; color: #888;'>
-                    <b>🔄 Ôn tập kế tiếp:</b> {next_rev}<br>
-                    <b>🎯 Độ khó:</b> {word['difficulty']}/100 &nbsp;|&nbsp; 
-                    <b>📊 Tỉ lệ:</b> ✅ {word['correct_count']} - ❌ {word['wrong_count']}
-                </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
+            st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
             
         play_audio(word['word'], autoplay=True)
         
