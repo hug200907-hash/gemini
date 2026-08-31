@@ -8,6 +8,7 @@ import re
 import io
 import base64
 import time
+import difflib
 import streamlit.components.v1 as components
 from gtts import gTTS
 
@@ -138,6 +139,30 @@ def normalize_word(word):
     if not word:
         return ""
     return re.sub(r'[^\w\s]', '', word.strip().lower())
+
+def get_diff_html(user_ans, correct_ans):
+    user_ans = str(user_ans).strip() if user_ans else ""
+    correct_ans = str(correct_ans).strip()
+    
+    if not user_ans:
+        return f"<span style='color: #2e7d32; font-weight: bold;'>{correct_ans}</span> (Bạn chưa nhập gì)"
+        
+    matcher = difflib.SequenceMatcher(None, user_ans.lower(), correct_ans.lower())
+    result = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            # Ký tự đúng: Màu xanh lá
+            result.append(f"<span style='color: #2e7d32; font-weight: bold;'>{correct_ans[j1:j2]}</span>")
+        elif tag == 'replace':
+            # Nhập sai ký tự: Gạch ngang đỏ + Hiển thị lại chữ đúng màu xanh
+            result.append(f"<span style='color: #d32f2f; text-decoration: line-through;'>{user_ans[i1:i2]}</span><span style='color: #2e7d32; font-weight: bold;'>{correct_ans[j1:j2]}</span>")
+        elif tag == 'delete':
+            # Nhập dư ký tự: Gạch ngang đỏ
+            result.append(f"<span style='color: #d32f2f; text-decoration: line-through;'>{user_ans[i1:i2]}</span>")
+        elif tag == 'insert':
+            # Nhập thiếu ký tự: Bổ sung chữ màu xanh có gạch chân
+            result.append(f"<span style='color: #2e7d32; font-weight: bold; text-decoration: underline;'>{correct_ans[j1:j2]}</span>")
+    return "".join(result)
 
 def play_audio(word_text, autoplay=True):
     try:
@@ -596,6 +621,12 @@ def render_review_tab():
                 is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
             else:
                 is_correct = user_ans == q['correct_answer']
+                
+        # --- PHÂN TÍCH LỖI NẾU LÀ CÂU HỎI ĐIỀN TỪ VÀ TRẢ LỜI SAI ---
+        if not is_correct and q['type'] in ['fill_blank', 'spelling'] and not idk and not is_timeout:
+             session['diff_html'] = get_diff_html(user_ans, q['correct_answer'])
+        else:
+             session['diff_html'] = ""
             
         if is_correct:
             session['correct'] += 1
@@ -620,6 +651,11 @@ def render_review_tab():
         else:
             reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
             st.error(f"❌ {reason}")
+            
+            # --- HIỂN THỊ CHI TIẾT LỖI CHÍNH TẢ ---
+            if session.get('diff_html'):
+                st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
+                st.write("") # Tạo khoảng trống
             
         st.info(f"**Correct Answer:** {q['correct_answer']}")
         if q['type'] == 'ipa_mcq':
