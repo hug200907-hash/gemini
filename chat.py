@@ -624,7 +624,7 @@ def render_review_tab():
         else:
              session['diff_html'] = ""
             
-        if is_correct:
+       if is_correct:
             session['correct'] += 1
             st.session_state.session_combo += 1
             xp_gain = 10 + (st.session_state.session_combo * 2)
@@ -637,9 +637,8 @@ def render_review_tab():
             session['session_xp'] += 2
             session['is_correct'] = False
             
-        # FIX: Hàm này chưa được định nghĩa trong code của bạn, mình tạm vô hiệu hóa để không bị sập app. 
-        # Nếu bạn có sẵn hàm cập nhật kết quả vào database, hãy đổi tên hàm tương ứng vào đây!
-        # process_answer(word['id'], is_correct)
+        # GỌI HÀM LƯU VÀO DATABASE Ở ĐÂY
+        process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
@@ -708,6 +707,41 @@ def render_review_tab():
             session['force_easy'] = False  
             session['specific_type'] = None
             st.rerun()
+def process_answer(word_id, is_correct):
+    conn = get_db()
+    # Lấy dữ liệu hiện tại của từ vựng
+    word_data = conn.execute("SELECT * FROM words WHERE id = ?", (word_id,)).fetchone()
+    if not word_data:
+        conn.close()
+        return
+
+    # Tính toán thời gian ôn tập và độ khó mới
+    next_review_str, new_streak, new_diff = calculate_next_review(dict(word_data), is_correct)
+    
+    # Cập nhật số đếm
+    new_correct = word_data['correct_count'] + (1 if is_correct else 0)
+    new_wrong = word_data['wrong_count'] + (0 if is_correct else 1)
+    new_review_count = word_data['review_count'] + 1
+    
+    # Cập nhật trạng thái
+    status = 'learning'
+    if new_correct >= 5 and new_streak >= 3:
+        status = 'mastered'
+        
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Lưu vào database
+    conn.execute('''
+        UPDATE words 
+        SET next_review = ?, streak = ?, difficulty = ?, 
+            correct_count = ?, wrong_count = ?, review_count = ?, 
+            status = ?, last_review = ?
+        WHERE id = ?
+    ''', (next_review_str, new_streak, new_diff, new_correct, new_wrong, 
+          new_review_count, status, now_str, word_id))
+    
+    conn.commit()
+    conn.close()
 # ==========================================
 # 6. TAB 3: NOTEBOOK & READING
 # ==========================================
