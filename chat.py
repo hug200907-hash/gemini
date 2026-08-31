@@ -346,9 +346,10 @@ def render_scan_tab():
 # ==========================================
 # 5. TAB 2: REVIEW SYSTEM
 # ==========================================
-def generate_question(word_data):
+def generate_question(word_data, force_easy=False, specific_type=None):
     q_types = ['fill_blank', 'vi_to_en', 'listening_mcq', 'spelling', 'ipa_mcq']
-    chosen_type = random.choice(q_types)
+    # Nếu đang hạ độ khó, giữ nguyên dạng bài cũ, nếu không thì chọn ngẫu nhiên
+    chosen_type = specific_type if specific_type else random.choice(q_types)
     
     conn = get_db()
     distractors_raw = conn.execute("SELECT word, meaning_vi, ipa FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 3", (word_data['id'],)).fetchall()
@@ -363,11 +364,13 @@ def generate_question(word_data):
     }
     
     if chosen_type == 'fill_blank' or chosen_type == 'spelling':
-        diff = word_data['difficulty']
-        # Ép AI giấu từ gắt gao hơn
+        # Ép độ khó về 5 (cực dễ) nếu người dùng bấm nút "Khó hiểu"
+        diff = 5 if force_easy else word_data['difficulty']
+        level_prompt = "A1 beginner level, use extremely simple and common words" if force_easy else f"difficulty {diff}/100"
+        
         prompt = f"""
         Generate a short, clear English sentence to test the word '{word_data['word']}'.
-        The difficulty of the sentence should be {diff}/100.
+        The sentence should be at: {level_prompt}.
         You MUST hide the target word '{word_data['word']}' by replacing it EXACTLY with '___' (three underscores).
         Output strictly in JSON format:
         {{"context": "The sentence with ___ instead of the word."}}
@@ -375,11 +378,8 @@ def generate_question(word_data):
         res = call_ai(prompt)
         context = res.get('context', f"I need to use the word ___.") if res else f"Context for ___."
         
-        # --- BẢO HIỂM 100%: Dùng Regex ẩn từ khóa phòng trường hợp AI quên ---
         target_word = word_data['word']
-        # Dùng re.sub với cờ re.IGNORECASE để xóa luôn từ khóa (dù nó viết hoa đầu câu hay viết thường)
         context = re.sub(re.escape(target_word), "___", context, flags=re.IGNORECASE)
-        # ---------------------------------------------------------------------
         
         question['context'] = context
         question['hint'] = generate_hint(word_data['word'], diff)
@@ -406,6 +406,265 @@ def generate_question(word_data):
         question['correct_answer'] = word_data['ipa']
 
     return question
+
+def render_review_tab():
+    st.header("⚔️ Review Session")
+    stats = get_user_stats()
+    st.markdown(f"**🔥 STREAK: {stats['daily_streak']} &nbsp;&nbsp;|&nbsp;&nbsp; XP: {stats['xp']} &nbsp;&nbsp;|&nbsp;&nbsp; LEVEL: {stats['level']}**")
+    st.divider()
+
+    if 'review_session' not in st.session_state:
+        st.session_state.review_session = None
+
+    if st.session_state.review_session is None:
+        words = select_review_words()
+        if not words:
+            st.success("🎉 You're all caught up! No words to review right now.")
+            
+            conn = get_db()
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            next_word = conn.execute(
+                "SELECT next_review FROM words WHERE next_review > ? AND status != 'new' ORDER BY next_review ASC LIMIT 1", 
+                (now_str,)
+            ).fetchone()
+            conn.close()
+
+            if next_word and next_word['next_review']:
+                next_time_str = next_word['next_review']
+                next_time = datetime.datetime.strptime(next_time_str, "%Y-%m-%d %H:%M:%S")
+                now = datetime.datetime.now()
+                diff = next_time - now
+                total_seconds = int(diff.total_seconds())
+                
+                if total_seconds > 0:
+                    components.html(f"""
+                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444;">
+                            <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
+                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;">Đang tính toán...</div>
+                        </div>
+                        <script>
+                            var countDownDate = new Date().getTime() + ({total_seconds} * 1000);
+                            var x = setInterval(function() {{
+                                var now = new Date().getTime();
+                                var distance = countDownDate - now;
+                                var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                                var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+                                var seconds = Math.floor((distance % (1000 * 60)) / 1000);
+                                document.getElementById("next_review_countdown").innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
+                                if (distance < 0) {{
+                                    clearInterval(x);
+                                    document.getElementById("next_review_countdown").innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
+                                }}
+                            }}, 1000);
+                        </script>
+                    """, height=150)
+            else:
+                st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
+            return
+            
+        if st.button("🚀 Start Review Session", type="primary"):
+            st.session_state.review_session = {
+                'words': words,
+                'current_idx': 0,
+                'correct': 0,
+                'answered': False,
+                'session_xp': 0,
+                'current_q': None,
+                'force_easy': False,
+                'specific_type': None
+            }
+            st.session_state.session_combo = 0
+            st.rerun()
+        return
+
+    session = st.session_state.review_session
+    idx = session['current_idx']
+    
+    if idx >= len(session['words']):
+        st.success(f"🎉 SESSION COMPLETE!")
+        st.write(f"Correct: {session['correct']} / {len(session['words'])}")
+        st.write(f"XP Earned: +{session['session_xp']} XP")
+        if st.button("Finish & Return to Dashboard"):
+            st.session_state.review_session = None
+            st.rerun()
+        return
+
+    word = session['words'][idx]
+    if session['current_q'] is None:
+        with st.spinner("Preparing question..."):
+            # Gọi API và tạo câu hỏi (có tính đến việc người dùng vừa bấm hạ độ khó)
+            session['current_q'] = generate_question(
+                word, 
+                force_easy=session.get('force_easy', False), 
+                specific_type=session.get('specific_type', None)
+            )
+            session['answered'] = False
+            session['start_time'] = time.time()
+            
+    q = session['current_q']
+    
+    progress = (idx) / len(session['words'])
+    st.progress(progress, text=f"Word {idx + 1} of {len(session['words'])}")
+    
+    st.subheader(f"Type: {q['type'].replace('_', ' ').title()}")
+    
+    time_limit = 20
+    if not session['answered']:
+        # Tạo ID duy nhất cho timer dựa trên thời gian để tránh bị kẹt số khi reload
+        timer_id = f"timer_{idx}_{int(session['start_time'])}"
+        st.markdown(f"""
+            <div style="font-size: 18px; font-weight: bold; color: #ff4b4b; margin-bottom: 15px;">
+                ⏳ Thời gian còn lại: <span id="{timer_id}">{time_limit}</span>s
+            </div>
+            <script>
+                var timeLeft = {time_limit};
+                var timerId = setInterval(function() {{
+                    if (timeLeft <= 0) {{
+                        clearInterval(timerId);
+                        var el = document.getElementById('{timer_id}');
+                        if(el) el.innerHTML = "Hết giờ!";
+                    }} else {{
+                        var el = document.getElementById('{timer_id}');
+                        if(el) el.innerHTML = timeLeft;
+                        timeLeft -= 1;
+                    }}
+                }}, 1000);
+            </script>
+        """, unsafe_allow_html=True)
+    
+    user_ans = None
+    simplify = False
+    
+    with st.form(key=f"question_form_{idx}_{session.get('force_easy', False)}"):
+        if q['type'] == 'fill_blank':
+            st.markdown(f"**Context:** {q['context']}")
+            st.markdown(f"**Hint:** `{q['hint']}`")
+            user_ans = st.text_input("Your answer:", key=f"input_{idx}")
+            
+        elif q['type'] == 'vi_to_en':
+            st.markdown(f"**Meaning:** {q['meaning_vi']}")
+            user_ans = st.radio("Choose the English word:", q['options'], key=f"radio_{idx}")
+            
+        elif q['type'] == 'listening_mcq':
+            st.markdown(f"**Meaning (Nghĩa):** {q['meaning_vi']}")
+            st.write("🎧 Hãy nghe 4 âm thanh dưới đây (chữ đã được giấu đi):")
+            
+            cols = st.columns(4)
+            option_labels = [] 
+            
+            for i, opt in enumerate(q['options']):
+                label = f"Lựa chọn {i+1}"
+                option_labels.append(label)
+                with cols[i]:
+                    st.write(label)
+                    fp = io.BytesIO()
+                    gTTS(text=opt, lang='en').write_to_fp(fp)
+                    fp.seek(0)
+                    st.audio(fp, format="audio/mp3")
+            
+            selected_label = st.radio("Chọn âm thanh đúng:", option_labels, key=f"radio_list_{idx}")
+            selected_index = option_labels.index(selected_label)
+            user_ans = q['options'][selected_index]
+            
+        elif q['type'] == 'spelling':
+            st.markdown(f"**Meaning:** {word['meaning_vi']}")
+            st.markdown(f"**Context:** {q['context']}")
+            st.markdown(f"**Hint:** `{q['hint']}`")
+            user_ans = st.text_input("Spell the word:", key=f"input_spell_{idx}")
+            
+        elif q['type'] == 'ipa_mcq':
+            st.markdown(f"**Meaning:** {word['meaning_vi']}")
+            user_ans = st.radio("Choose the correct IPA:", q['options'], key=f"radio_ipa_{idx}")
+
+        # Giao diện nút bấm: Thêm nút "Khó hiểu" nếu là dạng bài có Context
+        if q['type'] in ['fill_blank', 'spelling']:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
+            with col2:
+                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
+            with col3:
+                simplify = st.form_submit_button("❓ Câu này khó hiểu", disabled=session['answered'])
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
+            with col2:
+                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
+            simplify = False
+
+    # XỬ LÝ KHI BẤM NÚT HẠ ĐỘ KHÓ
+    if simplify and not session['answered']:
+        session['force_easy'] = True
+        session['specific_type'] = q['type']  # Giữ nguyên dạng câu hỏi hiện tại
+        session['current_q'] = None           # Xóa câu hỏi hiện tại để AI tạo lại
+        st.rerun()
+        
+    # XỬ LÝ SUBMIT HOẶC BẤM CHƯA THUỘC
+    if (submit or idk) and not session['answered']:
+        session['answered'] = True
+        elapsed_time = time.time() - session['start_time']
+        
+        is_timeout = elapsed_time > (time_limit + 2) 
+        
+        if idk:
+            is_correct = False
+            session['fail_reason'] = "Bạn đã chọn chưa thuộc từ này."
+        elif is_timeout:
+            is_correct = False
+            session['fail_reason'] = "Đã quá thời gian trả lời (20 giây)!"
+        else:
+            session['fail_reason'] = ""
+            if q['type'] in ['fill_blank', 'spelling']:
+                is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
+            else:
+                is_correct = user_ans == q['correct_answer']
+                
+        if not is_correct and q['type'] in ['fill_blank', 'spelling'] and not idk and not is_timeout:
+             session['diff_html'] = get_diff_html(user_ans, q['correct_answer'])
+        else:
+             session['diff_html'] = ""
+            
+        if is_correct:
+            session['correct'] += 1
+            st.session_state.session_combo += 1
+            xp_gain = 10 + (st.session_state.session_combo * 2)
+            award_xp(xp_gain)
+            session['session_xp'] += xp_gain
+            session['is_correct'] = True
+        else:
+            st.session_state.session_combo = 0
+            award_xp(2)
+            session['session_xp'] += 2
+            session['is_correct'] = False
+            
+        process_answer(word, is_correct)
+
+    if session['answered']:
+        st.divider()
+        if session.get('is_correct'):
+            st.success("🔥 Correct! Nice job.")
+        else:
+            reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
+            st.error(f"❌ {reason}")
+            
+            if session.get('diff_html'):
+                st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
+                st.write("") 
+            
+        st.info(f"**Correct Answer:** {q['correct_answer']}")
+        if q['type'] == 'ipa_mcq':
+            st.info(f"**Word:** {word['word']}")
+            
+        play_audio(word['word'], autoplay=True)
+        
+        if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
+            session['current_idx'] += 1
+            session['current_q'] = None
+            session['answered'] = False
+            session['force_easy'] = False  # Reset trạng thái hạ độ khó cho từ tiếp theo
+            session['specific_type'] = None
+            st.rerun()
 
 def process_answer(word_data, is_correct):
     conn = get_db()
