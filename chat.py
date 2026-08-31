@@ -912,52 +912,51 @@ def render_review_tab():
         process_answer(word, is_correct)
 
     # SAU KHI TRẢ LỜI -> HIỂN THỊ KẾT QUẢ ĐỨNG YÊN ĐỢI BẤM TIẾP TỤC
-    if session['answered']:
+if session['answered']:
         st.divider()
+        status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
+        
         if session.get('is_correct'):
-            st.success("🔥 Correct! Nice job.")
+            # Hiển thị trực tiếp thẻ từ vựng (bỏ thông báo Correct)
+            st.markdown(
+                f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
+                f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
+                f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
+            st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
+            
         else:
             reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
             st.error(f"❌ {reason}")
             
-            # --- HIỂN THỊ CHI TIẾT LỖI CHÍNH TẢ ---
             if session.get('diff_html'):
                 st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
-                st.write("") # Tạo khoảng trống
+                st.write("") 
             
-        st.info(f"**Correct Answer:** {q['correct_answer']}")
-        if q['type'] == 'ipa_mcq':
-            cols_per_row = 2
-            for i in range(0, len(words), cols_per_row):
-                cols = st.columns(cols_per_row)
-                for j in range(cols_per_row):
-                    if i + j < len(words):
-                        w = words[i + j]
-                        with cols[j]:
-                            with st.container(border=True):
-                                c_word, c_audio = st.columns([4, 1])
-                                with c_word:
-                                    status_icon = "🟢" if w['status'] == 'new' else "🔵" if w['status'] == 'learning' else "🔥"
-                                    st.subheader(f"{w['word']} {status_icon}")
-                                    
-                                    # HIGHLIGHT CHỦ ĐỀ: Đưa chủ đề lên ngay dưới từ vựng thành 1 tag nổi bật
-                                    st.markdown(
-                                        f"/{w['ipa']}/ • *{w['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
-                                        f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{w['topic']}</b></span>", 
-                                        unsafe_allow_html=True
-                                    )
-                                
-                                st.write("") # Tạo khoảng cách nhỏ
-                                st.markdown(f"**🇻🇳 Nghĩa:** {w['meaning_vi']}")
-                                st.markdown(f"**📝 Ví dụ:** _{w['example_sentence']}_")
+            # Vẫn hiển thị thẻ từ vựng khi sai để người dùng học lại
+            st.markdown(
+                f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
+                f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
+                f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
+            st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
             
-        # AUDIO PHÁT TRỌN VẸN
         play_audio(word['word'], autoplay=True)
         
         if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
             session['current_idx'] += 1
             session['current_q'] = None
             session['answered'] = False
+            session['force_easy'] = False  
+            session['specific_type'] = None
             st.rerun()
 
 # ==========================================
