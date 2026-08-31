@@ -637,18 +637,21 @@ def render_review_tab():
 
     if session['answered']:
         st.divider()
+        status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
+        
         if session.get('is_correct'):
-            # ĐÃ THAY ĐỔI THEO ĐÚNG ĐỊNH DẠNG BẠN YÊU CẦU:
-            status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
-            st.markdown(f"🔥 Correct! Nice job.")
+            # Hiển thị trực tiếp thẻ từ vựng (bỏ thông báo Correct)
             st.markdown(
-                f"**{word['word']} {status_icon}**<br>"
-                f"/{word['ipa']}/ • *{word['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>",
+                f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
+                f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
+                f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
+                f"</div>",
                 unsafe_allow_html=True
             )
             st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
             st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
+            
         else:
             reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
             st.error(f"❌ {reason}")
@@ -657,11 +660,13 @@ def render_review_tab():
                 st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
                 st.write("") 
             
-            status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
+            # Vẫn hiển thị thẻ từ vựng khi sai để người dùng học lại
             st.markdown(
-                f"**{word['word']} {status_icon}**<br>"
-                f"/{word['ipa']}/ • *{word['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
-                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>",
+                f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
+                f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
+                f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
+                f"</div>",
                 unsafe_allow_html=True
             )
             st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
