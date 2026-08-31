@@ -664,9 +664,6 @@ def render_review_tab():
         
         # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
-            import base64
-            from gtts import gTTS
-            import io
             
             combined_audio_bytes = b""
             
