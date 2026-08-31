@@ -492,7 +492,6 @@ def render_review_tab():
     word = session['words'][idx]
     if session['current_q'] is None:
         with st.spinner("Preparing question..."):
-            # Gọi API và tạo câu hỏi (có tính đến việc người dùng vừa bấm hạ độ khó)
             session['current_q'] = generate_question(
                 word, 
                 force_easy=session.get('force_easy', False), 
@@ -510,7 +509,6 @@ def render_review_tab():
     
     time_limit = 20
     if not session['answered']:
-        # Tạo ID duy nhất cho timer dựa trên thời gian để tránh bị kẹt số khi reload
         timer_id = f"timer_{idx}_{int(session['start_time'])}"
         st.markdown(f"""
             <div style="font-size: 18px; font-weight: bold; color: #ff4b4b; margin-bottom: 15px;">
@@ -576,7 +574,6 @@ def render_review_tab():
             st.markdown(f"**Meaning:** {word['meaning_vi']}")
             user_ans = st.radio("Choose the correct IPA:", q['options'], key=f"radio_ipa_{idx}")
 
-        # Giao diện nút bấm: Thêm nút "Khó hiểu" nếu là dạng bài có Context
         if q['type'] in ['fill_blank', 'spelling']:
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -593,14 +590,12 @@ def render_review_tab():
                 idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
             simplify = False
 
-    # XỬ LÝ KHI BẤM NÚT HẠ ĐỘ KHÓ
     if simplify and not session['answered']:
         session['force_easy'] = True
-        session['specific_type'] = q['type']  # Giữ nguyên dạng câu hỏi hiện tại
-        session['current_q'] = None           # Xóa câu hỏi hiện tại để AI tạo lại
+        session['specific_type'] = q['type']  
+        session['current_q'] = None           
         st.rerun()
         
-    # XỬ LÝ SUBMIT HOẶC BẤM CHƯA THUỘC
     if (submit or idk) and not session['answered']:
         session['answered'] = True
         elapsed_time = time.time() - session['start_time']
@@ -652,9 +647,31 @@ def render_review_tab():
                 st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
                 st.write("") 
             
-        st.info(f"**Correct Answer:** {q['correct_answer']}")
-        if q['type'] == 'ipa_mcq':
-            st.info(f"**Word:** {word['word']}")
+        # --- HIỂN THỊ DẠNG THẺ (CARD LAYOUT) GIỐNG HỆT TAB NOTEBOOK ---
+        st.markdown("### 📌 Thông tin từ vựng:")
+        with st.container(border=True):
+            status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
+            st.subheader(f"{word['word']} {status_icon}")
+            
+            st.markdown(
+                f"/{word['ipa']}/ • *{word['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>", 
+                unsafe_allow_html=True
+            )
+            
+            st.write("") 
+            st.markdown(f"**🇻🇳 Nghĩa:** {word['meaning_vi']}")
+            st.markdown(f"**📝 Ví dụ:** _{word['example_sentence']}_")
+            
+            next_rev = word['next_review'] if word['next_review'] else 'Chưa có'
+            st.markdown(f"""
+                <hr style="margin: 10px 0;">
+                <div style='font-size: 0.85rem; color: #888;'>
+                    <b>🔄 Ôn tập kế tiếp:</b> {next_rev}<br>
+                    <b>🎯 Độ khó:</b> {word['difficulty']}/100 &nbsp;|&nbsp; 
+                    <b>📊 Tỉ lệ:</b> ✅ {word['correct_count']} - ❌ {word['wrong_count']}
+                </div>
+            """, unsafe_allow_html=True)
             
         play_audio(word['word'], autoplay=True)
         
@@ -662,10 +679,9 @@ def render_review_tab():
             session['current_idx'] += 1
             session['current_q'] = None
             session['answered'] = False
-            session['force_easy'] = False  # Reset trạng thái hạ độ khó cho từ tiếp theo
+            session['force_easy'] = False  
             session['specific_type'] = None
             st.rerun()
-
 def process_answer(word_data, is_correct):
     conn = get_db()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
