@@ -437,7 +437,6 @@ def render_review_tab():
                 total_seconds = int(diff.total_seconds())
                 
                 if total_seconds > 0:
-                    # FIX: Thay st.components.v1.html bằng st.markdown(..., unsafe_allow_html=True)
                     st.markdown(f"""
                         <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444; margin-bottom: 20px;">
                             <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
@@ -624,21 +623,21 @@ def render_review_tab():
         else:
              session['diff_html'] = ""
             
-           if is_correct:
-                session['correct'] += 1
-                st.session_state.session_combo += 1
-                xp_gain = 10 + (st.session_state.session_combo * 2)
-                award_xp(xp_gain)
-                session['session_xp'] += xp_gain
-                session['is_correct'] = True
-            else:
-                st.session_state.session_combo = 0
-                award_xp(2)
-                session['session_xp'] += 2
-                session['is_correct'] = False
-                
-            # GỌI HÀM LƯU VÀO DATABASE Ở ĐÂY
-            process_answer(word['id'], is_correct)
+        if is_correct:
+            session['correct'] += 1
+            st.session_state.session_combo += 1
+            xp_gain = 10 + (st.session_state.session_combo * 2)
+            award_xp(xp_gain)
+            session['session_xp'] += xp_gain
+            session['is_correct'] = True
+        else:
+            st.session_state.session_combo = 0
+            award_xp(2)
+            session['session_xp'] += 2
+            session['is_correct'] = False
+            
+        # Đã bật lại tính năng lưu tiến trình vào CSDL
+        process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
