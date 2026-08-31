@@ -646,290 +646,6 @@ def render_review_tab():
                 st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
                 st.write("") 
 
-        # Hiển thị thông tin từ vựng giống thẻ Flashcard cho cả lúc làm đúng và làm sai
-        st.markdown(
-            f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
-            f"<div style='margin-bottom: 15px; font-size: 1.1rem;'>"
-            f"<span style='color: #888;'>//{word['ipa']}// • <i>{word['part_of_speech']}</i> &nbsp;&nbsp;|&nbsp;&nbsp;</span> "
-            f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{word['topic']}</b></span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
-        st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
-            
-        play_audio(word['word'], autoplay=True)
-        
-        if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
-            session['current_idx'] += 1
-            session['current_q'] = None
-            session['answered'] = False
-            session['force_easy'] = False  
-            session['specific_type'] = None
-            st.rerun()
-def process_answer(word_data, is_correct):
-    conn = get_db()
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    next_rev, new_streak, new_diff = calculate_next_review(word_data, is_correct)
-    
-    status = 'learning'
-    if is_correct and new_streak >= 5:
-        status = 'mastered'
-        
-    conn.execute('''
-        UPDATE words 
-        SET difficulty = ?, 
-            last_review = ?, 
-            next_review = ?, 
-            review_count = review_count + 1,
-            correct_count = correct_count + ?,
-            wrong_count = wrong_count + ?,
-            streak = ?,
-            status = ?
-        WHERE id = ?
-    ''', (new_diff, now_str, next_rev, 1 if is_correct else 0, 0 if is_correct else 1, new_streak, status, word_data['id']))
-    conn.commit()
-    conn.close()
-
-def render_review_tab():
-    st.header("⚔️ Review Session")
-    stats = get_user_stats()
-    st.markdown(f"**🔥 STREAK: {stats['daily_streak']} &nbsp;&nbsp;|&nbsp;&nbsp; XP: {stats['xp']} &nbsp;&nbsp;|&nbsp;&nbsp; LEVEL: {stats['level']}**")
-    st.divider()
-
-    if 'review_session' not in st.session_state:
-        st.session_state.review_session = None
-
-    if st.session_state.review_session is None:
-        words = select_review_words()
-        if not words:
-            st.success("🎉 You're all caught up! No words to review right now.")
-            
-            conn = get_db()
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            next_word = conn.execute(
-                "SELECT next_review FROM words WHERE next_review > ? AND status != 'new' ORDER BY next_review ASC LIMIT 1", 
-                (now_str,)
-            ).fetchone()
-            conn.close()
-
-            if next_word and next_word['next_review']:
-                next_time_str = next_word['next_review']
-                next_time = datetime.datetime.strptime(next_time_str, "%Y-%m-%d %H:%M:%S")
-                now = datetime.datetime.now()
-                diff = next_time - now
-                total_seconds = int(diff.total_seconds())
-                
-                if total_seconds > 0:
-                    st.components.v1.html(f"""
-                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444;">
-                            <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
-                            <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;">Đang tính toán...</div>
-                        </div>
-                        <script>
-                            var countDownDate = new Date().getTime() + ({total_seconds} * 1000);
-                            var x = setInterval(function() {{
-                                var now = new Date().getTime();
-                                var distance = countDownDate - now;
-                                var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                                var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                                var seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                                document.getElementById("next_review_countdown").innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
-                                if (distance < 0) {{
-                                    clearInterval(x);
-                                    document.getElementById("next_review_countdown").innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
-                                }}
-                            }}, 1000);
-                        </script>
-                    """, height=150)
-            else:
-                st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
-            return
-            
-        if st.button("🚀 Start Review Session", type="primary"):
-            st.session_state.review_session = {
-                'words': words,
-                'current_idx': 0,
-                'correct': 0,
-                'answered': False,
-                'session_xp': 0,
-                'current_q': None,
-                'force_easy': False,
-                'specific_type': None
-            }
-            st.session_state.session_combo = 0
-            st.rerun()
-        return
-
-    session = st.session_state.review_session
-    idx = session['current_idx']
-    
-    if idx >= len(session['words']):
-        st.success(f"🎉 SESSION COMPLETE!")
-        st.write(f"Correct: {session['correct']} / {len(session['words'])}")
-        st.write(f"XP Earned: +{session['session_xp']} XP")
-        if st.button("Finish & Return to Dashboard"):
-            st.session_state.review_session = None
-            st.rerun()
-        return
-
-    word = session['words'][idx]
-    if session['current_q'] is None:
-        with st.spinner("Preparing question..."):
-            session['current_q'] = generate_question(
-                word, 
-                force_easy=session.get('force_easy', False), 
-                specific_type=session.get('specific_type', None)
-            )
-            session['answered'] = False
-            session['start_time'] = time.time()
-            
-    q = session['current_q']
-    
-    progress = (idx) / len(session['words'])
-    st.progress(progress, text=f"Word {idx + 1} of {len(session['words'])}")
-    
-    st.subheader(f"Type: {q['type'].replace('_', ' ').title()}")
-    
-    time_limit = 20
-    if not session['answered']:
-        timer_id = f"timer_{idx}_{int(session['start_time'])}"
-        st.markdown(f"""
-            <div style="font-size: 18px; font-weight: bold; color: #ff4b4b; margin-bottom: 15px;">
-                ⏳ Thời gian còn lại: <span id="{timer_id}">{time_limit}</span>s
-            </div>
-            <script>
-                var timeLeft = {time_limit};
-                var timerId = setInterval(function() {{
-                    if (timeLeft <= 0) {{
-                        clearInterval(timerId);
-                        var el = document.getElementById('{timer_id}');
-                        if(el) el.innerHTML = "Hết giờ!";
-                    }} else {{
-                        var el = document.getElementById('{timer_id}');
-                        if(el) el.innerHTML = timeLeft;
-                        timeLeft -= 1;
-                    }}
-                }}, 1000);
-            </script>
-        """, unsafe_allow_html=True)
-    
-    user_ans = None
-    simplify = False
-    
-    with st.form(key=f"question_form_{idx}_{session.get('force_easy', False)}"):
-        if q['type'] == 'fill_blank':
-            st.markdown(f"**Context:** {q['context']}")
-            st.markdown(f"**Hint:** `{q['hint']}`")
-            user_ans = st.text_input("Your answer:", key=f"input_{idx}")
-            
-        elif q['type'] == 'vi_to_en':
-            st.markdown(f"**Meaning:** {q['meaning_vi']}")
-            user_ans = st.radio("Choose the English word:", q['options'], key=f"radio_{idx}")
-            
-        elif q['type'] == 'listening_mcq':
-            st.markdown(f"**Meaning (Nghĩa):** {q['meaning_vi']}")
-            st.write("🎧 Hãy nghe 4 âm thanh dưới đây (chữ đã được giấu đi):")
-            
-            cols = st.columns(4)
-            option_labels = [] 
-            
-            for i, opt in enumerate(q['options']):
-                label = f"Lựa chọn {i+1}"
-                option_labels.append(label)
-                with cols[i]:
-                    st.write(label)
-                    fp = io.BytesIO()
-                    gTTS(text=opt, lang='en').write_to_fp(fp)
-                    fp.seek(0)
-                    st.audio(fp, format="audio/mp3")
-            
-            selected_label = st.radio("Chọn âm thanh đúng:", option_labels, key=f"radio_list_{idx}")
-            selected_index = option_labels.index(selected_label)
-            user_ans = q['options'][selected_index]
-            
-        elif q['type'] == 'spelling':
-            st.markdown(f"**Meaning:** {word['meaning_vi']}")
-            st.markdown(f"**Context:** {q['context']}")
-            st.markdown(f"**Hint:** `{q['hint']}`")
-            user_ans = st.text_input("Spell the word:", key=f"input_spell_{idx}")
-            
-        elif q['type'] == 'ipa_mcq':
-            st.markdown(f"**Meaning:** {word['meaning_vi']}")
-            user_ans = st.radio("Choose the correct IPA:", q['options'], key=f"radio_ipa_{idx}")
-
-        if q['type'] in ['fill_blank', 'spelling']:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
-            with col2:
-                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
-            with col3:
-                simplify = st.form_submit_button("❓ Câu này khó hiểu", disabled=session['answered'])
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                submit = st.form_submit_button("✅ Submit Answer", disabled=session['answered'])
-            with col2:
-                idk = st.form_submit_button("❌ Chưa thuộc", disabled=session['answered'])
-            simplify = False
-
-    if simplify and not session['answered']:
-        session['force_easy'] = True
-        session['specific_type'] = q['type']  
-        session['current_q'] = None           
-        st.rerun()
-        
-    if (submit or idk) and not session['answered']:
-        session['answered'] = True
-        elapsed_time = time.time() - session['start_time']
-        
-        is_timeout = elapsed_time > (time_limit + 2) 
-        
-        if idk:
-            is_correct = False
-            session['fail_reason'] = "Bạn đã chọn chưa thuộc từ này."
-        elif is_timeout:
-            is_correct = False
-            session['fail_reason'] = "Đã quá thời gian trả lời (20 giây)!"
-        else:
-            session['fail_reason'] = ""
-            if q['type'] in ['fill_blank', 'spelling']:
-                is_correct = normalize_word(user_ans) == normalize_word(q['correct_answer'])
-            else:
-                is_correct = user_ans == q['correct_answer']
-                
-        if not is_correct and q['type'] in ['fill_blank', 'spelling'] and not idk and not is_timeout:
-             session['diff_html'] = get_diff_html(user_ans, q['correct_answer'])
-        else:
-             session['diff_html'] = ""
-            
-        if is_correct:
-            session['correct'] += 1
-            st.session_state.session_combo += 1
-            xp_gain = 10 + (st.session_state.session_combo * 2)
-            award_xp(xp_gain)
-            session['session_xp'] += xp_gain
-            session['is_correct'] = True
-        else:
-            st.session_state.session_combo = 0
-            award_xp(2)
-            session['session_xp'] += 2
-            session['is_correct'] = False
-            
-        process_answer(word, is_correct)
-
-    if session['answered']:
-        st.divider()
-        status_icon = "🟢" if word['status'] == 'new' else "🔵" if word['status'] == 'learning' else "🔥"
-        
-        if not session.get('is_correct'):
-            reason = session.get('fail_reason', 'Not quite right. Rematch coming soon!')
-            st.error(f"❌ {reason}")
-            if session.get('diff_html'):
-                st.markdown(f"<div style='padding: 10px; background-color: #fce4e4; border-radius: 5px; color: black;'><b>🔍 Lỗi chính tả của bạn:</b> {session['diff_html']}</div>", unsafe_allow_html=True)
-                st.write("") 
-
         # Hiển thị thông tin từ vựng
         st.markdown(
             f"<h3 style='margin-bottom: 5px;'>{word['word']} {status_icon}</h3>"
@@ -942,20 +658,40 @@ def render_review_tab():
         st.markdown(f"🇻🇳 **Nghĩa:** {word['meaning_vi']}")
         st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
         
-        # Audio tiếng Anh tự động phát
-        play_audio(word['word'], autoplay=True)
-        
-        # Audio tiếng Việt (không autoplay để tránh nhiễu âm thanh)
+        # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
+            import base64
+            # File Tiếng Anh
+            fp_en = io.BytesIO()
+            gTTS(text=word['word'], lang='en').write_to_fp(fp_en)
+            b64_en = base64.b64encode(fp_en.getvalue()).decode()
+            
+            # File Tiếng Việt
             fp_vi = io.BytesIO()
             gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
-            fp_vi.seek(0)
-            st.write("🔊 **Nghe nghĩa tiếng Việt:**")
-            st.audio(fp_vi, format="audio/mp3")
+            b64_vi = base64.b64encode(fp_vi.getvalue()).decode()
+            
+            audio_html = f"""
+                <audio id="audio_en_{idx}" src="data:audio/mp3;base64,{b64_en}" autoplay></audio>
+                <audio id="audio_vi_{idx}" src="data:audio/mp3;base64,{b64_vi}"></audio>
+                <script>
+                    var a_en = document.getElementById("audio_en_{idx}");
+                    var a_vi = document.getElementById("audio_vi_{idx}");
+                    if(a_en) {{
+                        a_en.onended = function() {{
+                            // Nghỉ 500ms (nửa giây) cho tự nhiên rồi đọc tiếng Việt
+                            setTimeout(function() {{
+                                if(a_vi) a_vi.play();
+                            }}, 500); 
+                        }};
+                    }}
+                </script>
+            """
+            st.markdown(audio_html, unsafe_allow_html=True)
         except Exception as e:
             pass
         
-        st.write("") # Tạo khoảng cách nhỏ trước nút tiếp tục
+        st.write("") 
         if st.button("Tiếp tục ➡️", type="primary", use_container_width=True):
             session['current_idx'] += 1
             session['current_q'] = None
@@ -963,7 +699,6 @@ def render_review_tab():
             session['force_easy'] = False  
             session['specific_type'] = None
             st.rerun()
-
 # ==========================================
 # 6. TAB 3: NOTEBOOK & READING
 # ==========================================
