@@ -677,10 +677,16 @@ def render_notebook_tab():
     st.header("📚 Sổ tay từ vựng (Notebook)")
     conn = get_db()
     
-    # 1. THANH TÌM KIẾM & BỘ LỌC (Hiển thị trên cùng 1 hàng)
-    col_search, col_filter = st.columns([2, 1])
+    # Tự động lấy danh sách các chủ đề hiện có trong Database
+    topics_query = conn.execute("SELECT DISTINCT topic FROM words WHERE topic IS NOT NULL").fetchall()
+    topic_list = ["Tất cả"] + sorted([t['topic'] for t in topics_query if t['topic'].strip() != ""])
+
+    # 1. THANH TÌM KIẾM & BỘ LỌC (Thêm riêng bộ lọc Chủ đề)
+    col_search, col_topic, col_filter = st.columns([2, 1.5, 1.5])
     with col_search:
-        search_term = st.text_input("🔍 Tìm kiếm từ vựng...", placeholder="Nhập từ tiếng Anh hoặc nghĩa tiếng Việt...")
+        search_term = st.text_input("🔍 Tìm kiếm từ vựng...", placeholder="Nhập từ hoặc nghĩa...")
+    with col_topic:
+        topic_filter = st.selectbox("🏷️ Chủ đề", topic_list)
     with col_filter:
         status_filter = st.selectbox("📌 Trạng thái", ["Tất cả", "new", "learning", "mastered"])
     
@@ -692,10 +698,13 @@ def render_notebook_tab():
         query += " AND status = ?"
         params.append(status_filter)
         
+    if topic_filter != "Tất cả":
+        query += " AND topic = ?"
+        params.append(topic_filter)
+        
     if search_term:
-        # Tìm theo từ tiếng Anh, nghĩa tiếng Việt hoặc chủ đề
-        query += " AND (word LIKE ? OR meaning_vi LIKE ? OR topic LIKE ?)"
-        params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
+        query += " AND (word LIKE ? OR meaning_vi LIKE ?)"
+        params.extend([f"%{search_term}%", f"%{search_term}%"])
         
     query += " ORDER BY difficulty DESC"
     words = conn.execute(query, params).fetchall()
@@ -703,9 +712,8 @@ def render_notebook_tab():
     st.write(f"📝 Tổng số từ hiện có: **{len(words)}**")
     st.divider()
     
-    # 2. HIỂN THỊ DẠNG THẺ (CARD LAYOUT) - Trực quan, không cần click mở
+    # 2. HIỂN THỊ DẠNG THẺ (CARD LAYOUT)
     if words:
-        # Chia thành 2 cột để hiển thị dạng lưới (Grid)
         cols_per_row = 2
         for i in range(0, len(words), cols_per_row):
             cols = st.columns(cols_per_row)
@@ -713,30 +721,30 @@ def render_notebook_tab():
                 if i + j < len(words):
                     w = words[i + j]
                     with cols[j]:
-                        # Tạo khung viền (Card) bao quanh mỗi từ
                         with st.container(border=True):
-                            
-                            # Dòng 1: Từ vựng + Biểu tượng trạng thái + Nút phát âm
                             c_word, c_audio = st.columns([4, 1])
                             with c_word:
-                                # Icon trạng thái: Xanh lá (Mới), Xanh dương (Đang học), Lửa (Đã thuộc)
                                 status_icon = "🟢" if w['status'] == 'new' else "🔵" if w['status'] == 'learning' else "🔥"
                                 st.subheader(f"{w['word']} {status_icon}")
-                                st.caption(f"/{w['ipa']}/ • {w['part_of_speech']}")
+                                
+                                # HIGHLIGHT CHỦ ĐỀ: Đưa chủ đề lên ngay dưới từ vựng thành 1 tag nổi bật
+                                st.markdown(
+                                    f"/{w['ipa']}/ • *{w['part_of_speech']}* &nbsp;&nbsp;|&nbsp;&nbsp; "
+                                    f"<span style='background-color: rgba(136, 136, 136, 0.2); padding: 3px 8px; border-radius: 12px; font-size: 0.85rem;'>🏷️ <b>{w['topic']}</b></span>", 
+                                    unsafe_allow_html=True
+                                )
                             with c_audio:
                                 if st.button("🔊", key=f"audio_btn_{w['id']}", help="Nghe phát âm"):
                                     play_audio(w['word'])
                             
-                            # Dòng 2: Nghĩa tiếng Việt và Ví dụ (Hiển thị ngay lập tức)
+                            st.write("") # Tạo khoảng cách nhỏ
                             st.markdown(f"**🇻🇳 Nghĩa:** {w['meaning_vi']}")
                             st.markdown(f"**📝 Ví dụ:** _{w['example_sentence']}_")
                             
-                            # Dòng 3: Căn dưới cùng là các thông số thống kê nhỏ gọn
                             next_rev = w['next_review'] if w['next_review'] else 'Chưa có'
                             st.markdown(f"""
                                 <hr style="margin: 10px 0;">
                                 <div style='font-size: 0.85rem; color: #888;'>
-                                    <b>🏷️ Chủ đề:</b> {w['topic']} <br>
                                     <b>🔄 Ôn tập kế tiếp:</b> {next_rev}<br>
                                     <b>🎯 Độ khó:</b> {w['difficulty']}/100 &nbsp;|&nbsp; 
                                     <b>📊 Tỉ lệ:</b> ✅ {w['correct_count']} - ❌ {w['wrong_count']}
@@ -746,7 +754,7 @@ def render_notebook_tab():
         st.info("Không tìm thấy từ vựng nào phù hợp với tìm kiếm của bạn.")
 
     # ==========================================
-    # PHẦN AI READING GENERATOR GIỮ NGUYÊN
+    # PHẦN AI READING GENERATOR
     # ==========================================
     st.divider()
     st.subheader("📖 AI Reading Generator")
