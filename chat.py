@@ -665,6 +665,7 @@ def render_review_tab():
         st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
         
         # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
+        # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
             import base64
             # File Tiếng Anh
@@ -677,22 +678,13 @@ def render_review_tab():
             gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
             b64_vi = base64.b64encode(fp_vi.getvalue()).decode()
             
+            # Nhúng trực tiếp sự kiện onended vào thẻ audio để Streamlit không vô hiệu hóa JavaScript
             audio_html = f"""
-                <audio id="audio_en_{idx}" src="data:audio/mp3;base64,{b64_en}" autoplay></audio>
+                <audio id="audio_en_{idx}" src="data:audio/mp3;base64,{b64_en}" autoplay 
+                       onended="setTimeout(function(){{ document.getElementById('audio_vi_{idx}').play(); }}, 500);">
+                </audio>
                 <audio id="audio_vi_{idx}" src="data:audio/mp3;base64,{b64_vi}"></audio>
-                <script>
-                    var a_en = document.getElementById("audio_en_{idx}");
-                    var a_vi = document.getElementById("audio_vi_{idx}");
-                    if(a_en) {{
-                        a_en.onended = function() {{
-                            setTimeout(function() {{
-                                if(a_vi) a_vi.play();
-                            }}, 500); 
-                        }};
-                    }}
-                </script>
             """
-            # FIX: Thay st.components.v1.html bằng st.markdown
             st.markdown(audio_html, unsafe_allow_html=True)
         except Exception as e:
             pass
