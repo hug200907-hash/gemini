@@ -665,9 +665,10 @@ def render_review_tab():
         st.markdown(f"📝 **Ví dụ:** _{word['example_sentence']}_")
         
         # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
-        # --- LOGIC PHÁT NỐI TIẾP: ANH -> VIỆT ---
         try:
             import base64
+            import streamlit.components.v1 as components
+            
             # File Tiếng Anh
             fp_en = io.BytesIO()
             gTTS(text=word['word'], lang='en').write_to_fp(fp_en)
@@ -678,14 +679,29 @@ def render_review_tab():
             gTTS(text=word['meaning_vi'], lang='vi').write_to_fp(fp_vi)
             b64_vi = base64.b64encode(fp_vi.getvalue()).decode()
             
-            # Nhúng trực tiếp sự kiện onended vào thẻ audio để Streamlit không vô hiệu hóa JavaScript
-            audio_html = f"""
-                <audio id="audio_en_{idx}" src="data:audio/mp3;base64,{b64_en}" autoplay 
-                       onended="setTimeout(function(){{ document.getElementById('audio_vi_{idx}').play(); }}, 500);">
-                </audio>
-                <audio id="audio_vi_{idx}" src="data:audio/mp3;base64,{b64_vi}"></audio>
+            # Dùng components.html và JS thuần để ép trình duyệt phát âm thanh tuần tự
+            audio_script = f"""
+            <script>
+                // Khởi tạo 2 luồng âm thanh
+                var audioEn = new Audio('data:audio/mp3;base64,{b64_en}');
+                var audioVi = new Audio('data:audio/mp3;base64,{b64_vi}');
+                
+                // Phát tiếng Anh
+                audioEn.play().catch(function(err) {{
+                    console.log("Trình duyệt chặn Autoplay: ", err);
+                }});
+                
+                // Bắt sự kiện tiếng Anh kết thúc -> đợi 0.5s -> Phát tiếng Việt
+                audioEn.onended = function() {{
+                    setTimeout(function() {{
+                        audioVi.play();
+                    }}, 500);
+                }};
+            </script>
             """
-            st.markdown(audio_html, unsafe_allow_html=True)
+            # Chạy script ngầm (không hiển thị giao diện)
+            components.html(audio_script, height=0, width=0)
+            
         except Exception as e:
             pass
         
