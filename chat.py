@@ -437,8 +437,9 @@ def render_review_tab():
                 total_seconds = int(diff.total_seconds())
                 
                 if total_seconds > 0:
-                    st.components.v1.html(f"""
-                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444;">
+                    # FIX: Thay st.components.v1.html bằng st.markdown(..., unsafe_allow_html=True)
+                    st.markdown(f"""
+                        <div style="text-align: center; font-family: sans-serif; padding: 15px; background-color: #262730; border-radius: 10px; border: 1px solid #444; margin-bottom: 20px;">
                             <h4 style="margin:0; color: #fafafa; font-size: 18px;">⏳ Từ vựng tiếp theo sẽ mở sau:</h4>
                             <div id="next_review_countdown" style="font-size: 35px; font-weight: bold; color: #ff4b4b; margin-top: 10px;">Đang tính toán...</div>
                         </div>
@@ -450,14 +451,17 @@ def render_review_tab():
                                 var hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
                                 var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
                                 var seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                                document.getElementById("next_review_countdown").innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
+                                var el = document.getElementById("next_review_countdown");
+                                if(el) {{
+                                    el.innerHTML = hours + "h " + minutes + "m " + seconds + "s ";
+                                }}
                                 if (distance < 0) {{
                                     clearInterval(x);
-                                    document.getElementById("next_review_countdown").innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
+                                    if(el) el.innerHTML = "Đã sẵn sàng! Hãy F5 lại trang.";
                                 }}
                             }}, 1000);
                         </script>
-                    """, height=150)
+                    """, unsafe_allow_html=True)
             else:
                 st.info("💡 Bạn chưa có từ vựng nào đang trong tiến trình ôn tập. Hãy sang tab Scan để thêm từ mới nhé!")
             return
@@ -633,8 +637,9 @@ def render_review_tab():
             session['session_xp'] += 2
             session['is_correct'] = False
             
-        # Đã sửa ở đây: truyền word['id'] thay vì word
-        process_answer(word['id'], is_correct)
+        # FIX: Hàm này chưa được định nghĩa trong code của bạn, mình tạm vô hiệu hóa để không bị sập app. 
+        # Nếu bạn có sẵn hàm cập nhật kết quả vào database, hãy đổi tên hàm tương ứng vào đây!
+        # process_answer(word['id'], is_correct)
 
     if session['answered']:
         st.divider()
@@ -680,7 +685,6 @@ def render_review_tab():
                     var a_vi = document.getElementById("audio_vi_{idx}");
                     if(a_en) {{
                         a_en.onended = function() {{
-                            // Nghỉ 500ms (nửa giây) cho tự nhiên rồi đọc tiếng Việt
                             setTimeout(function() {{
                                 if(a_vi) a_vi.play();
                             }}, 500); 
@@ -688,7 +692,8 @@ def render_review_tab():
                     }}
                 </script>
             """
-            st.components.v1.html(audio_html, height=0)
+            # FIX: Thay st.components.v1.html bằng st.markdown
+            st.markdown(audio_html, unsafe_allow_html=True)
         except Exception as e:
             pass
         
